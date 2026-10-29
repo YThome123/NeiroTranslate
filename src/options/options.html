@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NeiroTranslate — Settings</title>
+  <link rel="icon" href="../../assets/icons/icon-32.png">
+  <link rel="stylesheet" href="../shared/theme.css">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="sidebar-brand" href="#"><img src="../../assets/icons/icon-128.png" alt=""><span>NeiroTranslate<b>.</b></span></a>
+    <div class="nav-caption" data-i18n="workspace"></div>
+    <nav aria-label="Settings"><a class="nav-active" href="#general"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16M8 4v6m8-1v6m-7-1v6"/></svg></span><span data-i18n="optGeneral"></span></a><a href="#sync"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg></span><span data-i18n="optSync"></span></a><a href="#subtitles"><span class="nav-icon">CC</span><span data-i18n="optSubtitles"></span></a></nav>
+    <div class="nav-caption" data-i18n="providerNav"></div>
+    <nav aria-label="Providers"><a href="#free"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4"/></svg></span><span data-i18n="optFreeVoices"></span></a><a href="#gemini"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg></span>Gemini Live</a><a href="#elevenlabs"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v16m8-16v16"/></svg></span>ElevenLabs</a><a href="#yandex"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17 20V4h-5a4 4 0 0 0 0 8h5m-5 0-6 8"/></svg></span>Yandex SpeechKit</a><a href="#data"><span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5"/></svg></span><span data-i18n="optData"></span></a></nav>
+    <div class="sidebar-bottom"><span class="privacy-dot"></span><span data-i18n="localSettings"></span></div>
+  </aside>
+  <main class="page">
+    <header class="head">
+      <div>
+        <div class="page-context" data-i18n="settings"></div><h1 data-i18n="settingsIntro"></h1>
+        <p data-i18n="settingsDesc"></p>
+      </div>
+      <div class="head-orbit" aria-hidden="true"><i></i><i></i><svg class="orbital-star" viewBox="0 0 24 24" fill="currentColor"><path d="m12 1 3 8 8 3-8 3-3 8-3-8-8-3 8-3z"/></svg></div>
+    </header>
+    <div class="free-note"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7z"/><path d="m8 12 3 3 5-6"/></svg><span data-i18n="freeNote"></span></div>
+    <div class="grid">
+      <section class="card" id="general">
+        <h2 data-i18n="optGeneral"></h2>
+        <div class="field">
+          <label data-i18n="optUiLang"></label>
+          <select class="select" data-key="uiLang">
+            <option value="" data-i18n="optAuto"></option>
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+        <p class="hint" data-i18n="optShortcut"></p>
+      </section>
+
+      <section class="card" id="sync">
+        <h2 data-i18n="optSync"></h2>
+        <div class="field">
+          <label data-i18n="optSyncMode"></label>
+          <select class="select" data-key="syncMode">
+            <option value="realtime" data-i18n="optSyncRealtime"></option>
+            <option value="complete" data-i18n="optSyncComplete"></option>
+          </select>
+          <p class="hint" data-i18n="optSyncHint"></p>
+        </div>
+        <div class="field">
+          <label data-i18n="optMaxTempo"></label>
+          <div class="range-row"><input type="range" class="range" min="1" max="2" step="0.05" data-key="maxTempo" data-num><output data-out="maxTempo"></output></div>
+        </div>
+        <label class="row"><span data-i18n="optMultiVoice"></span><span class="switch"><input type="checkbox" data-key="multiVoice"><span></span></span></label>
+        <label class="row"><span data-i18n="optSpeakerAudio"></span><span class="switch"><input type="checkbox" data-key="speakerAudio"><span></span></span></label>
+        <p class="hint" data-i18n="optSpeakersHint"></p>
+      </section>
+
+      <section class="card" id="subtitles">
+        <h2 data-i18n="optSubtitles"></h2>
+        <label class="row"><span data-i18n="optShowSubs"></span><span class="switch"><input type="checkbox" data-key="showSubtitles"><span></span></span></label>
+        <label class="row"><span data-i18n="optShowOriginal"></span><span class="switch"><input type="checkbox" data-key="showOriginal"><span></span></span></label>
+        <label class="row"><span data-i18n="optHideNative"></span><span class="switch"><input type="checkbox" data-key="hideNativeCaptions"><span></span></span></label>
+        <div class="field two">
+          <div>
+            <label data-i18n="optSubSize"></label>
+            <div class="range-row"><input type="range" class="range" min="16" max="48" data-key="subtitleSize" data-num><output data-out="subtitleSize"></output></div>
+          </div>
+          <div>
+            <label data-i18n="optSubPos"></label>
+            <select class="select" data-key="subtitlePosition">
+              <option value="bottom" data-i18n="optBottom"></option>
+              <option value="top" data-i18n="optTop"></option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" id="free">
+        <h2><span data-i18n="optFreeVoices"></span> <span class="badge free" data-i18n="free"></span></h2>
+        <div class="field">
+          <label data-i18n="optBrowserVoice"></label>
+          <div class="with-btn">
+            <select class="select" data-key="browserVoiceName" id="browserVoice"><option value="" data-i18n="optAutoVoice"></option></select>
+            <button class="btn" data-test="browser" data-i18n="optTest"></button>
+          </div>
+          <p class="hint" data-i18n="optBrowserVoiceHint"></p>
+        </div>
+        <div class="field">
+          <label data-i18n="optRate"></label>
+          <div class="range-row"><input type="range" class="range" min="0.7" max="1.8" step="0.05" data-key="browserRate" data-num><output data-out="browserRate"></output></div>
+        </div>
+        <div class="field">
+          <label data-i18n="vGoogle"></label>
+          <div class="with-btn"><div class="hint grow">translate.google.com · MP3</div><button class="btn" data-test="google" data-i18n="optTest"></button></div>
+        </div>
+        <div class="result" data-result="free"></div>
+      </section>
+
+      <section class="card" id="gemini">
+        <h2><span data-i18n="optGemini"></span> <span class="badge pro">AI</span></h2>
+        <p class="hint"><span data-i18n="optGeminiHint"></span> <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" data-i18n="optGetKey"></a></p>
+        <div class="field">
+          <label data-i18n="optApiKey"></label>
+          <div class="with-btn">
+            <input type="password" class="input" data-key="geminiApiKey" placeholder="AIza..." autocomplete="off" spellcheck="false">
+            <button class="btn eye" data-eye>👁</button>
+          </div>
+        </div>
+        <div class="field">
+          <label data-i18n="optModel"></label>
+          <input class="input" list="geminiModels" data-key="geminiModel" spellcheck="false">
+          <datalist id="geminiModels">
+            <option value="gemini-3.5-live-translate-preview">Live Translate (recommended)</option>
+            <option value="gemini-2.5-flash-native-audio-preview-12-2025">Gemini 2.5 Flash Live</option>
+          </datalist>
+        </div>
+        <label class="row"><span data-i18n="optEcho"></span><span class="switch"><input type="checkbox" data-key="geminiEcho"><span></span></span></label>
+        <div class="with-btn"><div class="grow"></div><button class="btn" data-test="gemini" data-i18n="optTest"></button></div>
+        <div class="result" data-result="gemini"></div>
+      </section>
+
+      <section class="card" id="elevenlabs">
+        <h2><span data-i18n="optEleven"></span> <span class="badge pro" data-i18n="pro"></span></h2>
+        <p class="hint"><span data-i18n="optElevenHint"></span> <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener" data-i18n="optGetKey"></a></p>
+        <div class="field">
+          <label data-i18n="optApiKey"></label>
+          <div class="with-btn">
+            <input type="password" class="input" data-key="elevenApiKey" placeholder="sk_..." autocomplete="off" spellcheck="false">
+            <button class="btn eye" data-eye>👁</button>
+          </div>
+        </div>
+        <div class="field">
+          <label data-i18n="optVoice"></label>
+          <div class="with-btn">
+            <select class="select" id="elevenVoice"><option value="">—</option></select>
+            <button class="btn" id="loadEleven" data-i18n="optLoadVoices"></button>
+          </div>
+        </div>
+        <div class="field">
+          <label data-i18n="optVoice2"></label>
+          <select class="select" id="elevenVoice2"><option value="" data-i18n="optVoice2None"></option></select>
+        </div>
+        <div class="field">
+          <label data-i18n="optModel"></label>
+          <select class="select" data-key="elevenModel">
+            <option value="eleven_v4_turbo">Eleven v4 Turbo</option>
+            <option value="eleven_flash_v2_5">Flash v2.5</option>
+            <option value="eleven_turbo_v2_5">Turbo v2.5</option>
+            <option value="eleven_multilingual_v2">Multilingual v2</option>
+            <option value="eleven_v4">Eleven v4</option>
+            <option value="eleven_v3">Eleven v3</option>
+          </select>
+          <p class="hint" data-i18n="optElevenModelHint"></p>
+        </div>
+        <div class="field two">
+          <div>
+            <label data-i18n="optElevenStability"></label>
+            <div class="range-row"><input id="elevenStability" type="range" class="range" min="0" max="1" step="0.05" data-key="elevenStability" data-num data-unit="percent"><output data-out="elevenStability"></output></div>
+          </div>
+          <div>
+            <label data-i18n="optElevenSimilarity"></label>
+            <div class="range-row"><input id="elevenSimilarity" type="range" class="range" min="0" max="1" step="0.05" data-key="elevenSimilarity" data-num data-unit="percent"><output data-out="elevenSimilarity"></output></div>
+          </div>
+        </div>
+        <p class="hint" data-i18n="optElevenDeliveryHint"></p>
+        <label class="row"><span data-i18n="optElevenBoost"></span><input id="elevenSpeakerBoost" type="checkbox" class="toggle" data-key="elevenSpeakerBoost"></label>
+        <label class="row" data-i18n-title="optElevenContinuityHint"><span data-i18n="optElevenContinuity"></span><input id="elevenContinuity" type="checkbox" class="toggle" data-key="elevenContinuity"></label>
+        <div class="with-btn"><button class="btn" id="elevenBalanced" data-i18n="optElevenBalanced"></button></div>
+        <div class="field">
+          <label for="elevenSample" data-i18n="optElevenSample"></label>
+          <textarea class="input voice-sample" id="elevenSample" rows="3" maxlength="400" data-i18n-placeholder="optElevenSampleHint"></textarea>
+        </div>
+        <div class="with-btn">
+          <button class="btn" data-test="elevenlabs" data-i18n="optTest"></button>
+          <button class="btn" data-test="elevenlabs2" data-i18n="optElevenTestSecond"></button>
+          <button class="btn" id="stopEleven" data-i18n="stop" disabled></button>
+        </div>
+        <div class="result" data-result="elevenlabs"></div>
+      </section>
+
+      <section class="card" id="yandex">
+        <h2><span data-i18n="optYandex"></span> <span class="badge pro" data-i18n="pro"></span></h2>
+        <p class="hint"><span data-i18n="optYandexHint"></span> <a href="https://yandex.cloud/ru/docs/speechkit/quickstart/" target="_blank" rel="noopener" data-i18n="optGetKey"></a></p>
+        <div class="field">
+          <label data-i18n="optApiKey"></label>
+          <div class="with-btn">
+            <input type="password" class="input" data-key="yandexApiKey" placeholder="AQVN..." autocomplete="off" spellcheck="false">
+            <button class="btn eye" data-eye>👁</button>
+          </div>
+        </div>
+        <div class="field two">
+          <div>
+            <label data-i18n="optVoice"></label>
+            <select class="select" data-key="yandexVoice" id="yandexVoice"></select>
+          </div>
+          <div>
+            <label data-i18n="optFolder"></label>
+            <input class="input" data-key="yandexFolderId" placeholder="b1g..." spellcheck="false">
+          </div>
+        </div>
+        <div class="field">
+          <label data-i18n="optSpeed"></label>
+          <div class="range-row"><input type="range" class="range" min="0.8" max="1.8" step="0.05" data-key="yandexSpeed" data-num><output data-out="yandexSpeed"></output></div>
+        </div>
+        <div class="with-btn"><div class="grow"></div><button class="btn" data-test="yandex" data-i18n="optTest"></button></div>
+        <div class="result" data-result="yandex"></div>
+      </section>
+
+      <section class="card" id="data">
+        <h2 data-i18n="optData"></h2>
+        <div class="with-btn">
+          <button class="btn" id="exportBtn" data-i18n="optExport"></button>
+          <button class="btn danger" id="clearBtn" data-i18n="optClear"></button>
+        </div>
+      </section>
+    </div>
+
+    <div class="privacy-note" data-i18n="privacyNote"></div>
+    <footer class="foot"><span>NeiroTranslate <span id="ver"></span></span><span>Alt + Shift + T</span></footer>
+  </main>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="../shared/languages.js"></script>
+  <script src="../shared/settings.js"></script>
+  <script src="../shared/i18n.js"></script>
+  <script src="../offscreen/time-stretch.js"></script>
+  <script src="../offscreen/audio-player.js"></script>
+  <script src="../offscreen/tts-providers.js"></script>
+  <script src="../offscreen/gemini-live.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480">
+<defs><radialGradient id="planet" cx=".3" cy=".2" r=".8"><stop stop-color="#ffba75"/><stop offset=".6" stop-color="#fb7a30"/><stop offset="1" stop-color="#d7490d"/></radialGradient><clipPath id="circle"><circle cx="1010" cy="225" r="126"/></clipPath></defs>
+<rect width="1280" height="480" rx="24" fill="#fff7f1"/>
+<rect x="54" y="48" width="48" height="48" rx="13" fill="#f26522"/><path d="M68 81V63l20 20V63" fill="none" stroke="white" stroke-width="4" stroke-linecap="round"/>
+<text x="118" y="80" font-family="Segoe UI,Arial,sans-serif" font-size="27" font-weight="700" fill="#20252d">NeiroTranslate<tspan fill="#f26522">.</tspan></text>
+<g font-family="Segoe UI,Arial,sans-serif" fill="#20252d"><text x="54" y="207" font-size="65" font-weight="700" letter-spacing="-2">Every stream.</text><text x="54" y="283" font-size="65" font-weight="700" letter-spacing="-2">Your language.</text><text x="57" y="333" font-size="22" fill="#646c78">Real-time subtitles &amp; voice-over.</text></g>
+<g fill="none" stroke="#f0cbb3"><ellipse cx="1010" cy="225" rx="221" ry="101" transform="rotate(-34 1010 225)"/><ellipse cx="1010" cy="225" rx="190" ry="177" transform="rotate(-34 1010 225)"/></g>
+<circle cx="1010" cy="225" r="126" fill="url(#planet)"/><g clip-path="url(#circle)" fill="none" stroke="#ffc99b" stroke-opacity=".5" stroke-width="2"><path d="M850 190q150-120 320 0m-330 30q150-120 340 0m-350 30q150-120 370 0m-380 30q150-120 380 0m-390 30q150-120 400 0m-410 30q150-120 420 0"/></g>
+<path d="m1154 68 7 21 21 7-21 7-7 21-7-21-21-7 21-7z" fill="#f26522"/><circle cx="819" cy="299" r="7" fill="#f26522"/><circle cx="1151" cy="356" r="4" fill="#eaa77e"/>
+<rect x="795" y="333" width="242" height="85" rx="15" fill="white" stroke="#f1dfd3"/><text x="815" y="362" font-family="Segoe UI,Arial,sans-serif" font-size="15" fill="#707783">Hello, world.</text><text x="815" y="394" font-family="Segoe UI,Arial,sans-serif" font-weight="600" font-size="23" fill="#20252d">Привет, мир.</text>
+<text x="57" y="425" font-family="Segoe UI,Arial,sans-serif" font-size="14" fill="#8a624a">Chromium extension · Captions · Gemini Live · ElevenLabs</text>
+</svg>

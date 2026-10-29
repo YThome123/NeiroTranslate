@@ -1,0 +1,27 @@
+/* NeiroTranslate ? Orbital light */
+:root {
+  --bg:#f5f6f8; --bg-2:#f8f9fb; --card:#fff; --card-2:#f0f2f5;
+  --line:#e9ebef; --line-2:#d9dde3; --text:#20252d; --muted:#626b78; --dim:#68717e;
+  --accent:#f26522; --action:#cc440a; --accent-2:#c3430d; --grad:linear-gradient(120deg,#f57837,#ed5419);
+  --ok:#168258; --warn:#98600a; --bad:#c52b3e; --radius:16px;
+  --font:'Segoe UI Variable Text','Segoe UI',system-ui,-apple-system,sans-serif; color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:13px/1.5 var(--font)}
+button,select,input{font:inherit;color:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}
+a{color:var(--accent-2);text-decoration:none}a:hover{text-decoration:underline}
+button,a,input,select,summary{-webkit-tap-highlight-color:transparent}
+:focus-visible{outline:3px solid #f2652270;outline-offset:3px}
+.badge{display:inline-flex;align-items:center;height:19px;padding:0 6px;border-radius:5px;font-size:9px;font-weight:700;white-space:nowrap}
+.badge.free{background:#eaf6ef;color:#16613d}.badge.pro{background:#fff0e6;color:#a23e0b}
+.select,.input{width:100%;min-width:0;height:40px;padding:0 12px;border-radius:9px;border:1px solid var(--line-2);background:#fff;outline:none;transition:border-color .15s}
+.select:focus,.input:focus{border-color:var(--accent);box-shadow:0 0 0 3px #f2652214}.select option{background:#fff}
+.range{appearance:none;width:100%;height:4px;border-radius:4px;background:#e1e5eb;accent-color:var(--accent)}
+.range::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);border:2px solid #fff;box-shadow:0 0 0 1px #f2652240;cursor:pointer}
+.btn{height:36px;padding:0 14px;border-radius:8px;border:1px solid var(--line-2);background:#fff;font-weight:600;white-space:nowrap;transition:background .15s}
+.btn:hover{background:#fff5ee;border-color:#efb393}.btn.primary{background:var(--action);border-color:var(--action);color:#fff}
+.switch{position:relative;width:36px;height:21px;flex:none;display:inline-block}.switch input{opacity:0;width:100%;height:100%;position:absolute;margin:0;z-index:1;cursor:pointer}
+.switch span{position:absolute;inset:0;border-radius:20px;background:#d7dce3;transition:background .2s}.switch span::after{content:'';position:absolute;left:3px;top:3px;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 2px #0002;transition:transform .2s}
+.switch input:checked+span{background:var(--accent)}.switch input:checked+span::after{transform:translateX(15px)}.switch input:focus-visible+span{outline:3px solid #f2652270;outline-offset:3px}
+.icon{width:17px;height:17px;flex:none}.hidden{display:none!important}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

@@ -1,0 +1,25 @@
+WEBVTT
+
+00:00:00.500 --> 00:00:03.500
+Welcome back to the stream, everyone.
+
+00:00:03.800 --> 00:00:07.000
+Today we are building a neural network from scratch.
+
+00:00:07.300 --> 00:00:10.500
+First, let's look at how a single neuron works.
+
+00:00:10.800 --> 00:00:14.000
+It takes inputs, multiplies them by weights, and adds a bias.
+
+00:00:14.300 --> 00:00:17.500
+Then we apply an activation function to the result.
+
+00:00:17.800 --> 00:00:21.000
+Stack enough of these layers and the model starts to learn.
+
+00:00:21.300 --> 00:00:24.500
+Don't forget to drop your questions in the chat.
+
+00:00:24.800 --> 00:00:28.000
+Alright, let's write some code together.

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NeiroTranslate — Stats</title>
+  <link rel="icon" href="../../assets/icons/icon-32.png">
+  <link rel="stylesheet" href="../shared/theme.css">
+  <link rel="stylesheet" href="stats.css">
+</head>
+<body>
+  <div class="page">
+    <header class="head">
+      <img src="../../assets/icons/icon-128.png" alt="" class="logo">
+      <div>
+        <h1 id="title">Статистика</h1>
+        <p id="subtitle">Хранится только на этом устройстве</p>
+      </div>
+      <div class="filters" id="filters">
+        <button data-days="7">7d</button>
+        <button data-days="30">30d</button>
+        <button data-days="90">90d</button>
+        <button data-days="all" class="active">All</button>
+      </div>
+    </header>
+
+    <p id="error" role="alert" hidden></p>
+
+    <section class="kpis">
+      <div class="kpi"><span id="kTime">0m</span><small id="lTime">переведено</small></div>
+      <div class="kpi"><span id="kSessions">0</span><small id="lSessions">сессий</small></div>
+      <div class="kpi"><span id="kDays">0</span><small id="lDays">активных дней</small></div>
+      <div class="kpi"><span id="kLangs">0</span><small id="lLangs">языков</small></div>
+    </section>
+
+    <section class="card">
+      <h2 id="hHeat">Активность за год</h2>
+      <div class="heat-wrap"><div class="heat" id="heat"></div></div>
+    </section>
+
+    <div class="cols">
+      <section class="card">
+        <h2 id="hHours">По часам</h2>
+        <div class="hours" id="hours"></div>
+        <p class="muted" id="peak"></p>
+      </section>
+      <section class="card">
+        <h2 id="hLangs">Языки</h2>
+        <div id="langs" class="bars"></div>
+      </section>
+      <section class="card">
+        <h2 id="hSites">Сайты</h2>
+        <div id="sites" class="bars"></div>
+      </section>
+      <section class="card">
+        <h2 id="hModes">Режимы</h2>
+        <div id="modes" class="bars"></div>
+      </section>
+    </div>
+  </div>
+  <script src="../shared/languages.js"></script>
+  <script src="../shared/settings.js"></script>
+  <script src="../shared/i18n.js"></script>
+  <script src="stats.js"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>NeiroTranslate — OBS subtitles</title>
+  <link rel="icon" href="../../assets/icons/icon-32.png">
+  <link rel="stylesheet" href="../shared/theme.css">
+  <link rel="stylesheet" href="overlay.css">
+</head>
+<body class="bg-green">
+  <div class="bar" id="bar">
+    <strong data-i18n="ovTitle"></strong>
+    <span class="hint" data-i18n="ovHint"></span>
+    <label><span data-i18n="ovBg"></span>
+      <select id="bg" class="select">
+        <option value="green">Chroma green</option>
+        <option value="magenta">Chroma magenta</option>
+        <option value="black">Black</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label>
+    <label><span data-i18n="ovSize"></span>
+      <input type="range" id="size" class="range" min="20" max="72" value="40">
+    </label>
+    <button id="clear" class="btn" data-i18n="ovClear"></button>
+  </div>
+  <main class="stage">
+    <div class="orig" id="orig"></div>
+    <div class="line" id="line">NeiroTranslate</div>
+  </main>
+  <script src="../shared/settings.js"></script>
+  <script src="../shared/i18n.js"></script>
+  <script src="overlay.js"></script>
+</body>
+</html>
