@@ -3,6 +3,9 @@
 (function (root) {
   const cache = new Map();
   const CACHE_MAX = 400;
+  const inflight = new Map();
+  const MAX_INFLIGHT = 64;
+  const cooldowns = new Map();
 
   function remember(key, value) {
     cache.set(key, value);
@@ -15,10 +18,20 @@
   }
 
   async function googleTranslate(text, target, source, origin, signal) {
+    if ((cooldowns.get(origin) || 0) > Date.now()) throw new Error('Google Translate HTTP 429 (cooldown)');
+    cooldowns.delete(origin);
     const url = origin + '/translate_a/single?client=gtx&sl=' + encodeURIComponent(source || 'auto') + '&dt=t'
       + '&tl=' + encodeURIComponent(target) + '&q=' + encodeURIComponent(text);
     const resp = await fetch(url, { credentials: 'omit', signal: requestSignal(signal, 1800) });
-    if (!resp.ok) throw new Error('Google Translate HTTP ' + resp.status);
+    if (!resp.ok) {
+      if (resp.status === 429) {
+        const retry = resp.headers?.get?.('Retry-After');
+        let delay = retry ? (/^\d+(?:\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now()) : 30000;
+        if (!Number.isFinite(delay) || delay <= 0) delay = 30000;
+        cooldowns.set(origin, Date.now() + Math.max(1000, Math.min(120000, delay)));
+      }
+      throw new Error('Google Translate HTTP ' + resp.status);
+    }
     const data = await resp.json();
     if (!Array.isArray(data) || !Array.isArray(data[0])
       || data[0].some(seg => !Array.isArray(seg) || typeof seg[0] !== 'string')) {
@@ -57,8 +70,47 @@
     if (typeof target !== 'string' || !target.trim() || target.trim().toLowerCase() === 'auto') {
       return {text:clean,detected:'',ok:false,error:'freeTranslationUnavailable',detail:'Target language is required'};
     }
+    const explicitSource = typeof source === 'string' ? source.trim().toLowerCase() : '';
+    if (explicitSource && explicitSource !== 'auto' && explicitSource === target.trim().toLowerCase()) {
+      return {text:clean,detected:explicitSource,provider:'identity',ok:true};
+    }
     const key = target + '\u0000' + (source || '') + '\u0000' + clean;
     if (cache.has(key)) return cache.get(key);
+    let entry = inflight.get(key);
+    if (entry?.controller.signal.aborted) {inflight.delete(key); entry = null;}
+    if (!entry) {
+      if (inflight.size >= MAX_INFLIGHT) return {ok:false,text:clean,detected:'',error:'freeTranslationUnavailable',detail:'Too many pending translations'};
+      entry = {controller:new AbortController(), users:0, settled:false};
+      inflight.set(key, entry);
+      entry.promise = requestTranslation(clean, target, source, entry.controller.signal).then(result => {
+        if (result.ok && !entry.controller.signal.aborted) remember(key, result);
+        return result;
+      }).finally(() => {
+        entry.settled = true;
+        if (inflight.get(key) === entry) inflight.delete(key);
+      });
+    }
+    entry.users++;
+    return new Promise(resolve => {
+      let done = false;
+      const finish = result => {
+        if (done) return;
+        done = true;
+        signal?.removeEventListener('abort', onAbort);
+        if (--entry.users === 0 && !entry.settled) {
+          entry.controller.abort();
+          if (inflight.get(key) === entry) inflight.delete(key);
+        }
+        resolve(result);
+      };
+      const onAbort = () => finish({ok:false,cancelled:true,text:''});
+      signal?.addEventListener('abort', onAbort, {once:true});
+      entry.promise.then(finish);
+      if (signal?.aborted) onAbort();
+    });
+  }
+
+  async function requestTranslation(clean, target, source, signal) {
     const requests = new AbortController();
     const combined = signal ? AbortSignal.any([signal, requests.signal]) : requests.signal;
     let error, hedgeTimer, deadlineTimer, onAbort;
@@ -91,7 +143,6 @@
       });
       if (signal?.aborted) return {ok:false,cancelled:true,text:''};
       const result = Object.assign({ok:true}, translated);
-      remember(key, result);
       return result;
     } catch (failure) {
       if (signal?.aborted) return {ok:false,cancelled:true,text:''};

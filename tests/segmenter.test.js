@@ -65,3 +65,17 @@ test('rolling captions use a short stable window instead of a one-second delay',
   seg.feed('a short subtitle', 0); seg.feed('a short subtitle', 250);
   assert.deepEqual(lines, ['a short subtitle']);
 });
+
+test('identical utterances separated by missing captions are spoken independently', () => {
+  assert.deepEqual(run(['Yes.', '', 'Yes.', '', 'Yes.', '']), ['Yes.', 'Yes.', 'Yes.']);
+});
+
+test('unchanged snapshots and a rolling prefix are still deduplicated within one utterance', () => {
+  assert.deepEqual(run(['Yes.', 'Yes.', 'Yes.']), ['Yes.']);
+  assert.deepEqual(run(['Hello.', 'Hello. How are', 'Hello. How are you?', 'Hello. How are you?']),
+    ['Hello.', 'How are you?']);
+});
+
+test('repeated sentences inside one growing caption keep both spoken occurrences', () => {
+  assert.deepEqual(run(['No! No!', 'No! No!', 'No! No! We should stop.']), ['No!', 'No!', 'We should stop.']);
+});

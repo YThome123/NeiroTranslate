@@ -23,6 +23,10 @@ let state = Object.assign({}, IDLE_STATE);
 let stateReady = false;
 let offscreenCreating = null;
 const translations = new Set();
+const completeTranslations = new Set();
+const COMPLETE_BACKLOG_LIMIT = 256;
+let captionOrderTail = Promise.resolve();
+let duckOperation = 0;
 let captionPrefetch = null;
 let captionSequence = 0;
 let displayedSequence = 0;
@@ -122,18 +126,25 @@ async function sendToOffscreen(msg, tries = 30) {
   const id = msg.sessionId || state.sessionId;
   const version = msg.mediaVersion ?? state.mediaVersion;
   const payload = Object.assign({ target: 'offscreen', sessionId: id, mediaVersion: version }, msg);
+  const epoch = sessionEpoch;
+  const valid = () => (msg.type === 'NT_OFF_STOP' || (state.active && state.sessionId === id && sessionEpoch === epoch)) &&
+    (msg.duckOperation == null || msg.duckOperation === duckOperation) &&
+    (msg.voiceEpoch == null || msg.voiceEpoch === voiceEpoch) &&
+    (msg.settingsRevision == null || msg.settingsRevision === settingsRevision) &&
+    (!['NT_OFF_SPEAK', 'NT_OFF_DUCK', 'NT_OFF_PREFETCH'].includes(msg.type) ||
+      (!state.paused && state.mediaVersion === version && (!msg.deadline || Date.now() <= msg.deadline) &&
+       (!Number.isFinite(msg.startBy) || Date.now() < msg.startBy)));
   for (let i = 0; i < tries; i++) {
-    if (msg.type !== 'NT_OFF_STOP' && (!state.active || state.sessionId !== id)) return CANCELLED;
-    if (msg.voiceEpoch != null && msg.voiceEpoch !== voiceEpoch) return CANCELLED;
-    if (msg.settingsRevision != null && msg.settingsRevision !== settingsRevision) return CANCELLED;
-    if (['NT_OFF_SPEAK', 'NT_OFF_DUCK', 'NT_OFF_PREFETCH'].includes(msg.type) && (state.paused || state.mediaVersion !== version || (msg.deadline && Date.now() > msg.deadline))) return CANCELLED;
+    if (!valid()) return CANCELLED;
     let res;
     try {
       res = await chrome.runtime.sendMessage(payload);
     } catch (e) { /* not ready yet */ }
+    if (!valid()) return CANCELLED;
     if (res && res.ok) return res;
     if (res && res.error) throw new Error(res.error);
     await new Promise((r) => setTimeout(r, 60));
+    if (!valid()) return CANCELLED;
   }
   throw new Error('Offscreen document did not respond');
 }
@@ -358,7 +369,7 @@ async function speak(text, deadline = Date.now() + 2500, expectedTarget = state.
   try {s=await ntGetSettings();}
   catch(error) {if(epoch===sessionEpoch && state.active)setStatus('voice_error',error.message);return;}
   if(revision!==settingsRevision)return;
-  if (!state.active || state.paused || epoch !== sessionEpoch || Date.now() > deadline ||
+  if (!state.active || state.paused || epoch !== sessionEpoch || (s.syncMode !== 'complete' && Date.now() > deadline) ||
       (state.source && s.source!==state.source)) return;
   // A failed storage notification must not leave the actual session permanently
   // on an old provider. Reconcile again from a successful read on the next cue.
@@ -378,14 +389,15 @@ async function speak(text, deadline = Date.now() + 2500, expectedTarget = state.
   if(!['browser',...OFFSCREEN_VOICES].includes(s.voice))return;
   const now = Date.now();
   const realtime = s.syncMode !== 'complete';
-  const syncEnd = Number.isFinite(extra.syncEnd) ? extra.syncEnd : null;
+  const syncEnd = realtime && Number.isFinite(extra.syncEnd) ? extra.syncEnd : null;
   // Realtime: a phrase whose slot is long over would only be said over the next
   // one; its subtitle was already shown, so skip the voice.
   if (realtime && syncEnd && now > syncEnd + NT_TIMING.LATE_START_MS) return;
-  voiceQueue.maxPending = realtime ? 1 : 4;
-  voiceQueue.enqueue({text,parts:extra.parts || null,settings:s,epoch,deadline,syncEnd,
-    startBy: realtime ? realtimeStartBy(text, syncEnd, deadline, s, now) : now + 8000,
+  voiceQueue.maxPending = realtime ? 1 : COMPLETE_BACKLOG_LIMIT;
+  const accepted = voiceQueue.enqueue({text,parts:extra.parts || null,settings:s,epoch,deadline,syncEnd,retain:!realtime,
+    startBy: realtime ? realtimeStartBy(text, syncEnd, deadline, s, now) : Infinity,
     cutAt: realtime && syncEnd ? syncEnd + NT_TIMING.OVERRUN_CUT_MS : Infinity});
+  if (!accepted && !realtime) setStatus('voice_error','completeBacklogFull');
   prepareNextVoice();
 }
 
@@ -418,7 +430,7 @@ async function playVoice(item, signal) {
     }
     const before = voiceEpoch;
     await playVoicePart(Object.assign({}, item, {text:parts[i].text, speaker:parts[i].speaker || null, syncEnd,
-      startBy: i ? Date.now() + 3000 : item.startBy}), signal);
+      startBy: item.retain || i ? Date.now() + 3000 : item.startBy}), signal);
     // Audio start (browser 'start' event / scheduled offscreen audio) sets
     // expectedSpeechEnd for a newer token. A part that never sounded was
     // dropped as late or failed: the reply must not be spoken without it.
@@ -442,12 +454,12 @@ async function playVoicePart(item, signal) {
   saveState(); cancelBrowserSpeech(); setDuck(false);
   // Keep current speech intact across short CC updates; never keep it indefinitely.
   const estimatedSpeechMs=Math.max(3000,Math.min(12000,item.text.length*70+2200));
-  const deadline = Math.min(Date.now()+15000,Math.max(item.deadline+1500,Date.now()+estimatedSpeechMs));
+  const deadline = item.retain ? Date.now()+estimatedSpeechMs : Math.min(Date.now()+15000,Math.max(item.deadline+1500,Date.now()+estimatedSpeechMs));
   const current = () => state.active && !state.paused && item.epoch === sessionEpoch && token === voiceEpoch && !signal.aborted;
   return new Promise(resolve => {
     let finished = false;
     let watchdog = 0;
-    const owner = {token,finish:() => {
+    const owner = {token,startBy:item.startBy,finish:() => {
       if (finished) return;
       finished = true; clearTimeout(watchdog);signal.removeEventListener('abort',cancel);
       if (activeVoiceCompletion === owner) activeVoiceCompletion = null;
@@ -486,7 +498,7 @@ async function playVoicePart(item, signal) {
       const timing = {syncEnd:item.syncEnd, speaker:item.speaker};
       if (s.voice === 'browser') speakBrowser(item.text,lang,s,deadline,true,token,item.startBy,timing);
       else {
-        const result=await sendToOffscreen({type:'NT_OFF_SPEAK',text:item.text,lang,settings:s,deadline,voiceEpoch:token,
+        const result=await sendToOffscreen({type:'NT_OFF_SPEAK',text:item.text,lang,settings:s,deadline,startBy:item.startBy,voiceEpoch:token,
           syncEnd:item.syncEnd,maxTempo:s.maxTempo,voice:offscreenVoice(s.voice,item.speaker,s)},5);
         if (result?.cancelled || result?.ignored) completeVoice(token,'voiceRequestTimeout');
       }
@@ -497,7 +509,7 @@ async function playVoicePart(item, signal) {
 
 async function prepareNextVoice() {
   const next = voiceQueue.peek();
-  if (!next || next.settings.voice !== 'google' || next.epoch !== sessionEpoch || state.paused || next.startBy < Date.now()) return;
+  if (!next || next.retain || next.settings.voice !== 'google' || next.epoch !== sessionEpoch || state.paused || next.startBy < Date.now()) return;
   const s = next.settings;
   try {
     if (!(await hasOffscreen()) || next.epoch !== sessionEpoch || state.paused) return;
@@ -508,11 +520,14 @@ async function prepareNextVoice() {
 
 // With tab capture the page's own volume feeds the capture: duck in the audio page's mixer instead.
 function setDuck(on) {
-  if (state.source === 'gemini') sendToOffscreen({ type: 'NT_OFF_DUCK', on }, 3).catch(() => {});
+  const operation = ++duckOperation, epoch = sessionEpoch, id = state.sessionId, version = state.mediaVersion;
+  const current = () => operation === duckOperation && epoch === sessionEpoch && id === state.sessionId &&
+    version === state.mediaVersion && state.active && !state.paused;
+  if (state.source === 'gemini') sendToOffscreen({ type: 'NT_OFF_DUCK', on, duckOperation:operation }, 3).catch(() => {});
   else if (state.capture) {
     // The audio page (and its capture) may be gone: fall back to the page's <video>.
-    sendToOffscreen({ type: 'NT_OFF_DUCK', on }, 3).catch(() => {
-      if (!state.capture) return;
+    sendToOffscreen({ type: 'NT_OFF_DUCK', on, duckOperation:operation }, 3).catch(() => {
+      if (!current() || !state.capture) return;
       state.capture = false; saveState();
       sendToTab({ type: 'NT_C_DUCK', on });
     });
@@ -623,7 +638,10 @@ async function pumpBrowserTts() {
     pumpBrowserTts();
     if (error) {
       voiceCache = null;
-      if (allowFallback && remaining.trim()) googleVoiceFallback(remaining, lang, s, deadline, token, timing).catch(e => {if (token === voiceEpoch) completeVoice(token,e.message);});
+      // First-start freshness was satisfied by the audible prefix. A known
+      // remainder may recover until completion, without replaying that prefix.
+      const fallbackStartBy = started && lastChar > 0 ? deadline : startBy;
+      if (allowFallback && remaining.trim()) googleVoiceFallback(remaining, lang, s, deadline, token, timing, fallbackStartBy).catch(e => {if (token === voiceEpoch) completeVoice(token,e.message);});
       else {setStatus('voice_error', error); completeVoice(token);}
     } else completeVoice(token);
   };
@@ -633,6 +651,7 @@ async function pumpBrowserTts() {
     onEvent: (e) => {
       if (finished || epoch !== browserSpeechEpoch || !state.active) return;
       if (e.type === 'start') {
+        if (Date.now() >= startBy) { finish('');chrome.tts.stop();return; }
         started=true;startedAt=Date.now();clearTimeout(browserStartTimer);setDuck(true);
         expectedSpeechEnd = {token, at: startedAt + speechMs / rate};
       }
@@ -653,12 +672,13 @@ async function pumpBrowserTts() {
   browserStartTimer = setTimeout(() => {
     const check = speaking => {
       if (finished || epoch !== browserSpeechEpoch) return;
-      if (speaking) return setDuck(true);
+      if (!started && Date.now() >= startBy) {finish('');chrome.tts.stop();return;}
+      if (speaking && started) return setDuck(true);
       finish('browserVoiceUnavailable');chrome.tts.stop();
     };
     if (typeof chrome.tts.isSpeaking === 'function') chrome.tts.isSpeaking(check);
     else check(false);
-  },Math.min(1500,Math.max(1,deadline-Date.now())));
+  },Math.min(1500,Math.max(1,Math.min(startBy,deadline)-Date.now())));
   try {
     chrome.tts.speak(text, options, () => {
       if (chrome.runtime.lastError) finish(chrome.runtime.lastError.message || 'browserVoiceUnavailable');
@@ -666,10 +686,10 @@ async function pumpBrowserTts() {
   } catch (error) { finish(error.message || 'browserVoiceUnavailable'); }
 }
 
-async function googleVoiceFallback(text, lang, settings, deadline, token = voiceEpoch, timing = {}) {
+async function googleVoiceFallback(text, lang, settings, deadline, token = voiceEpoch, timing = {}, startBy = deadline) {
   const epoch = sessionEpoch;
-  const current = () => state.active && !state.paused && epoch === sessionEpoch && token === voiceEpoch && Date.now() <= deadline;
-  const expired = () => {if (token===voiceEpoch && Date.now()>deadline) completeVoice(token,'voiceRequestTimeout');};
+  const current = () => state.active && !state.paused && epoch === sessionEpoch && token === voiceEpoch && Date.now() <= deadline && Date.now() < startBy;
+  const expired = () => {if (token===voiceEpoch && (Date.now()>deadline || Date.now()>=startBy)) completeVoice(token,'voiceRequestTimeout');};
   if (!current()) return expired();
   await ensureOffscreen();
   if (!current()) return expired();
@@ -680,7 +700,7 @@ async function googleVoiceFallback(text, lang, settings, deadline, token = voice
   }
   if (!current()) return expired();
   setStatus('voice_fallback', 'usingGoogleVoice');
-  await sendToOffscreen({type:'NT_OFF_SPEAK',text,lang,settings:{...settings,voice:'google'},deadline,fallback:true,voiceEpoch:token,
+  await sendToOffscreen({type:'NT_OFF_SPEAK',text,lang,settings:{...settings,voice:'google'},deadline,startBy,fallback:true,voiceEpoch:token,
     syncEnd:timing?.syncEnd,maxTempo:settings.maxTempo,voice:offscreenVoice('google',timing?.speaker || null,settings)});
 }
 
@@ -690,7 +710,7 @@ async function translateParts(parts, target, source, signal) {
   const failed = results.find(result => !result.ok);
   if (failed) return failed;
   const texts = results.map(result => result.text);
-  return {ok:true, texts, detected:results[0].detected,
+  return {ok:true, texts, detected:results[0].detected, detectedParts:results.map(result => result.detected),
     text: texts.length > 1 ? texts.map(text => '— ' + text).join(' ') : texts[0]};
 }
 
@@ -713,6 +733,8 @@ function cancelTranslations() {
   if (captionPrefetch) {captionPrefetch.abort(); captionPrefetch = null;}
   for (const request of translations) request.abort();
   translations.clear();
+  completeTranslations.clear();
+  captionOrderTail = Promise.resolve();
   captionSequence = displayedSequence = 0;
 }
 
@@ -778,13 +800,34 @@ function handleCaption(text, sourceLang, timing = {}) {
   const original = parts.length > 1 ? parts.map(part => '— ' + part.text).join(' ') : parts[0].text;
   const sequence = ++captionSequence;
   const abort = new AbortController();
-  while (translations.size >= 3) {
-    const oldest = translations.values().next().value; oldest.abort(); translations.delete(oldest);
-  }
+  const previousCaption = captionOrderTail;
+  let releaseCaption;
+  const captionReservation = new Promise(resolve => {releaseCaption = resolve;});
+  captionOrderTail = captionReservation;
   translations.add(abort);
   if (state.status !== 'translating') setStatus('translating');
   ntGetSettings().then(async (s) => {
     if (abort.signal.aborted || epoch !== sessionEpoch) return;
+    const complete = s.syncMode === 'complete';
+    if (complete) {
+      if (completeTranslations.size + voiceQueue.pendingCount + Number(voiceQueue.active) >= COMPLETE_BACKLOG_LIMIT) {
+        if (captionOrderTail === captionReservation) captionOrderTail = previousCaption;
+        setStatus('voice_error','completeBacklogFull');return;
+      }
+      completeTranslations.add(abort);
+    } else {
+      while (translations.size > 3) {
+        const oldest = translations.values().next().value; oldest.abort();translations.delete(oldest);
+      }
+    }
+    if(abort.signal.aborted)return;
+    if (complete) {
+      // Preserve accepted source order while retaining bounded upstream work.
+      await Promise.race([previousCaption,new Promise(resolve => {
+        if(abort.signal.aborted)resolve();else abort.signal.addEventListener('abort',resolve,{once:true});
+      })]);
+      if(abort.signal.aborted || epoch!==sessionEpoch)return;
+    }
     const lang = ntFindLanguage(s.targetLang);
     let r = await translateParts(parts, lang.gt, s.sourceLang || sourceLang, abort.signal);
     let retried=false;
@@ -796,23 +839,28 @@ function handleCaption(text, sourceLang, timing = {}) {
         r=await translateParts(parts,lang.gt,s.sourceLang || sourceLang,abort.signal);
       }
     }
-    if(retried && sequence!==captionSequence)return;
-    if (abort.signal.aborted || r.cancelled || !state.active || state.paused || epoch !== sessionEpoch || target !== state.targetLang || sequence < displayedSequence || Date.now() > requestDeadline) return;
+    if(retried && !complete && sequence!==captionSequence)return;
+    if (abort.signal.aborted || r.cancelled || !state.active || state.paused || epoch !== sessionEpoch || target !== state.targetLang ||
+        (!complete && (sequence < displayedSequence || Date.now() > requestDeadline))) return;
     if (!r.ok) { setStatus('translation_error', r.error || 'translationUnavailable'); return; }
     displayedSequence = sequence;
     setStatus('translating');
     emitSubtitle(r.text, original, true, deadline);
-    const sameLang = r.detected && r.detected.split('-')[0] === lang.gt.split('-')[0];
-    if (sameLang) return;
     // Asked after translation on purpose: by then more of the phrase has been
     // heard, which matters for cues that are read before they are spoken.
     const acoustic = await querySpeaker(timing.spokenFrom, timing.spokenTo, s);
     if (abort.signal.aborted || epoch !== sessionEpoch || !state.active || state.paused) return;
     const voiced = parts.map((part, i) => ({text: ntSpeakableText(r.texts ? r.texts[i] : r.text),
-      speaker: s.multiVoice !== false ? speakerBook.resolve(part, acoustic, i) : null})).filter(part => part.text);
+      detected:r.detectedParts?.[i],speaker: s.multiVoice !== false ? speakerBook.resolve(part, acoustic, i) : null}))
+      .filter(part => part.text && (!part.detected || part.detected.split('-')[0] !== lang.gt.split('-')[0]));
     if (voiced.length) await speak(voiced.map(part => part.text).join(' '), deadline, s.targetLang, {parts: voiced, syncEnd: timing.syncEnd});
   }).catch((e) => { if (!abort.signal.aborted && epoch === sessionEpoch) setStatus('translation_error', e.message); })
-    .finally(() => translations.delete(abort));
+    .finally(() => {
+      translations.delete(abort);completeTranslations.delete(abort);
+      // Rejected/error exits may finish before their predecessor. Adopt its
+      // completion so later accepted work cannot bypass the retained order.
+      releaseCaption(previousCaption);
+    });
 }
 
 // Gemini source: transcripts arrive already translated.
@@ -925,7 +973,7 @@ function handleMessage(msg, sender, sendResponse) {
         ntGetSettings().then(s => {
           if (epoch !== sessionEpoch || token !== voiceEpoch || state.paused || !state.active) return;
           setStatus('voice_fallback', 'usingBrowserVoice');
-          return speakBrowser(msg.text, msg.lang, s, msg.deadline, false, token, msg.deadline,
+          return speakBrowser(msg.text, msg.lang, s, msg.deadline, false, token, msg.startBy ?? activeVoiceCompletion?.startBy ?? msg.deadline,
             {syncEnd: msg.syncEnd, speaker: msg.speakerKey ? speakerBook.profiles.get(msg.speakerKey) || null : null});
         }).catch(e => completeVoice(token,e.message));
       } else if (!state.paused) {setStatus('voice_error', msg.detail);completeVoice(msg.voiceEpoch);}
@@ -1017,8 +1065,9 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     if (!current()) return;
     const elevenChanged = state.voice === 'elevenlabs' && ['elevenApiKey', 'elevenVoiceId', 'elevenVoiceId2',
       'elevenModel', 'elevenStability', 'elevenSimilarity', 'elevenSpeakerBoost', 'elevenContinuity'].some(key => changes[key]);
-    const resetVoice=(changes.voice && state.voice!==s.voice)||(changes.targetLang && state.targetLang!==s.targetLang)||changes.sourceLang||elevenChanged;
+    const resetVoice=(changes.voice && state.voice!==s.voice)||(changes.targetLang && state.targetLang!==s.targetLang)||changes.sourceLang||changes.syncMode||elevenChanged;
     if (resetVoice) {
+      cancelTranslations();
       voiceQueue.clear();
       if (captionPrefetch) {captionPrefetch.abort(); captionPrefetch = null;}
       browserSpeechEpoch++;

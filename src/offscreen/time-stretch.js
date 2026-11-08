@@ -16,7 +16,7 @@ const NT_STRETCH = { FRAME_SEC: 0.03, TOLERANCE_SEC: 0.008, EPSILON: 0.015, MAX_
  * @param {number} sampleRate
  * @returns {Float32Array}
  */
-function ntTimeStretch(input, ratio, sampleRate) {
+function* ntTimeStretchSteps(input, ratio, sampleRate) {
   const n = input.length;
   if (!n || !(ratio > 0) || !(sampleRate > 0)) return new Float32Array(0);
   const r = Math.max(0.4, Math.min(2.5, ratio));
@@ -57,10 +57,79 @@ function ntTimeStretch(input, ratio, sampleRate) {
       weight[o] += window[i];
     }
     previous = pos;
+    // The fallback uses the very same frames, yielding bounded work to Stop.
+    if (k % 4 === 3) yield;
   }
   const result = new Float32Array(outLength);
-  for (let i = 0; i < outLength; i++) result[i] = weight[i] > 1e-3 ? out[i] / weight[i] : out[i];
+  for (let i = 0; i < outLength; i++) {
+    result[i] = weight[i] > 1e-3 ? out[i] / weight[i] : out[i];
+    if (i % 16384 === 16383) yield;
+  }
   return result;
+}
+
+function ntTimeStretch(input, ratio, sampleRate) {
+  const steps = ntTimeStretchSteps(input, ratio, sampleRate);
+  let step;
+  do { step = steps.next(); } while (!step.done);
+  return step.value;
+}
+
+// One lazily created local worker per player. Cancellation also terminates CPU
+// work; copied samples ensure transferring never detaches the provider cache.
+class NtAudioShaper {
+  constructor() { this.worker = null; this.pending = null; this.serial = 0; }
+  async stretch(input, ratio, sampleRate) {
+    const id = ++this.serial;
+    if (typeof Worker === 'function') {
+      try {
+        if (!this.worker) this.worker = new Worker('time-stretch-worker.js');
+        const worker = this.worker;
+        const result = await new Promise(resolve => {
+          this.pending = resolve;
+          worker.onmessage = event => {
+            if (this.worker === worker && id === this.serial && event.data.id === id) resolve(event.data.samples);
+          };
+          worker.onerror = () => {
+            if (this.worker !== worker || id !== this.serial) return;
+            worker.terminate(); this.worker = null; resolve(null);
+          };
+          worker.postMessage({id, samples: input, ratio, sampleRate}, [input.buffer]);
+        });
+        if (id !== this.serial) return null;
+        this.pending = null;
+        if (result) return result;
+        // A failed worker may have consumed the transfer. Report failure instead
+        // of quietly scheduling at the wrong pitch or synchronously retrying.
+        throw new Error('Audio shaping worker failed');
+      } catch (error) {
+        if (!input.byteLength) throw error;
+        if (this.worker) this.worker.terminate();
+        this.worker = null;
+      }
+    }
+    const steps = ntTimeStretchSteps(input, ratio, sampleRate);
+    for (;;) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (id !== this.serial) return null;
+      const step = steps.next();
+      if (step.done) return step.value;
+    }
+  }
+  cancel() {
+    this.serial++;
+    if (this.pending) {
+      if (this.worker) this.worker.terminate();
+      this.worker = null;
+      this.pending(null);
+    }
+    this.pending = null;
+  }
+  destroy() {
+    this.cancel();
+    if (this.worker) this.worker.terminate();
+    this.worker = null;
+  }
 }
 
 /**
@@ -85,5 +154,5 @@ function ntStretchAudioBuffer(ctx, buffer, ratio) {
   return result;
 }
 
-if (typeof self !== 'undefined') { self.ntTimeStretch = ntTimeStretch; self.ntStretchAudioBuffer = ntStretchAudioBuffer; self.NT_STRETCH = NT_STRETCH; }
+if (typeof self !== 'undefined') { self.ntTimeStretch = ntTimeStretch; self.ntStretchAudioBuffer = ntStretchAudioBuffer; self.NtAudioShaper = NtAudioShaper; self.NT_STRETCH = NT_STRETCH; }
 if (typeof module !== 'undefined' && module.exports) module.exports = { ntTimeStretch, ntStretchAudioBuffer, NT_STRETCH };

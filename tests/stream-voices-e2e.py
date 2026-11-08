@@ -34,6 +34,7 @@ class StreamSuite(base.Suite):
         super().__init__(ctx, sw)
         self.sw.evaluate("""() => {
           qa.browserSpeech=[];qa.browserActive=false;qa.browserCurrent=null;qa.interruptions=0;qa.failBrowser=false;
+          qa.browserDuration=1400;qa.browserEndedAt=null;
           chrome.tts.getVoices=cb=>cb([{voiceName:'QA Russian',lang:'ru-RU',remote:false}]);voiceCache=null;
           chrome.tts.isSpeaking=cb=>cb(qa.browserActive);
           chrome.tts.stop=()=>{
@@ -46,8 +47,8 @@ class StreamSuite(base.Suite):
             options.onEvent({type:'start'});callback?.();
             job.timer=setTimeout(()=>{
               if(qa.browserCurrent!==job)return;
-              qa.browserCurrent=null;qa.browserActive=false;options.onEvent({type:'end',charIndex:text.length});
-            },1400);
+              qa.browserCurrent=null;qa.browserActive=false;qa.browserEndedAt=Date.now();options.onEvent({type:'end',charIndex:text.length});
+            },qa.browserDuration);
           };
         }""")
 
@@ -275,17 +276,25 @@ class StreamSuite(base.Suite):
         self.wait(lambda: self.audio()["starts"] > before)
 
     def recover_google(self):
-        self.reset("Fallback first sentence.", audio_mode="error")
-        self.hold_clock()
-        self.wait(lambda: self.sw.evaluate("()=>qa.browserActive"))
-        interruptions = self.sw.evaluate("()=>qa.interruptions")
-        self.audio(mode="ok")
-        self.caption("Recovered Google sentence.")
-        self.wait(lambda: "Recovered Google sentence." in self.line())
-        assert self.sw.evaluate("()=>qa.interruptions") == interruptions
-        self.wait(lambda: self.audio()["rms"] > 0.01)
-        assert self.sw.evaluate("()=>qa.browserActive") is False
-        assert self.sw.evaluate("()=>qa.interruptions") == interruptions
+        previous = self.sw.evaluate("()=>qa.browserDuration")
+        self.sw.evaluate("()=>{qa.browserDuration=700;qa.browserEndedAt=null;}")
+        try:
+            self.reset("Fallback first sentence.", audio_mode="error")
+            self.hold_clock()
+            self.wait(lambda: self.sw.evaluate("()=>qa.browserActive"))
+            interruptions = self.sw.evaluate("()=>qa.interruptions")
+            self.audio(mode="ok")
+            self.caption("Recovered Google sentence.")
+            self.wait(lambda: "Recovered Google sentence." in self.line())
+            assert self.sw.evaluate("()=>qa.interruptions") == interruptions
+            self.wait(lambda: self.audio()["rms"] > 0.01)
+            assert self.sw.evaluate("()=>qa.browserActive") is False
+            assert self.sw.evaluate("()=>qa.interruptions") == interruptions
+            ended = self.sw.evaluate("()=>qa.browserEndedAt")
+            assert ended is not None
+            assert self.audio()["sourceStarts"][0]["startAt"] >= ended
+        finally:
+            self.sw.evaluate("duration=>qa.browserDuration=duration", previous)
 
     def real_google_stream(self):
         self.reset("Welcome to our stream.")

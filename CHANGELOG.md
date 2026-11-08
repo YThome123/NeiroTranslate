@@ -1,5 +1,19 @@
 # Changes
 
+## 3.4.1 — 2026-11-07
+
+Audit fixes and more responsive audio cancellation.
+
+- Separate the first audible start deadline from the completion deadline across browser/Google fallbacks and all offscreen providers. Cancel expired pending synthesis without replaying a stale phrase; preserve the valid tail of speech that started on time.
+- Move long-buffer pitch-preserving WSOLA to a cancellable local worker, with a cooperative fallback. Await asynchronous provider deliveries, protect cached audio from transfer/detachment, and invalidate late results on pause, seek, settings changes and Stop.
+- Preserve accepted complete-mode captions and translations in source order beyond their original cue expiry. Bound the outstanding backlog at 256 phrases and report overload explicitly. Keep realtime's freshness policy.
+- Shorten realtime's overrun allowance from 700ms to 300ms while a fresh phrase waits; preserve the one-time near-end word grace and complete-mode retention.
+- Bound Gemini's browser transport buffer, discard source packets older than three seconds, guard stale socket opens and recover from send failures. Reconnect attempts reset only after sustained successful audio, not a slow handshake or idle connection.
+- Share simultaneous identical translation requests with independent cancellation. Temporarily skip Google text hosts returning HTTP429 according to bounded Retry-After, so the next caption can immediately use the healthy fallback.
+- Treat blank rolling-caption snapshots as utterance boundaries, preserving genuine repeated answers. Determine target-language suppression per speaker part. Reject stale or superseded ducking operations across session changes.
+- Keep an open OBS overlay synchronized with local preferences, clear hidden originals immediately, and reject delayed initial state/preferences that would overwrite newer content.
+- Add behavioral regressions and a real Chromium shaping/worker/cancellation test. Use isolated clocks for previously load-sensitive deadline tests.
+
 ## 3.4.0 — 2026-10-29
 
 ElevenLabs: balanced delivery, model-aware controls and voice preview.

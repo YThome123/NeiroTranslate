@@ -11,6 +11,13 @@ class NtAudioPlayer {
     this.onSpeaking = onSpeaking || (() => {});
     this.endTime = 0;
     this.deadline = Infinity;
+    this.startBy = Infinity; // wall time: applies only to the first source
+    this.started = false;
+    this.generation = 0;
+    this.shaping = new Set();
+    this.work = Promise.resolve();
+    this.shaper = null;
+    this.resumeWaiters = new Set();
     this.sources = new Set();
     this.idleWaiters = new Set();
     this.speaking = false;
@@ -94,6 +101,104 @@ class NtAudioPlayer {
     return Date.now() + Math.max(0.06, this.endTime - now) * 1000;
   }
 
+  /** Serialized production path; clear invalidates both queued and active work. */
+  _enqueueWork(run) {
+    const generation = this.generation, ticket = {};
+    this.shaping.add(ticket);
+    const result = this.work.then(async () =>
+      await this._ready(generation) && generation === this.generation ? run(generation) : false);
+    this.work = result.catch(() => {});
+    return result.finally(() => { this.shaping.delete(ticket); this._notifyIdle(); });
+  }
+
+  enqueueBufferAsync(audioBuffer, shape = {}) {
+    return this._enqueueWork(generation => this._shapeAndSchedule(audioBuffer, shape, generation));
+  }
+
+  /** A frozen audio clock cannot establish an audible first start. */
+  async _ready(generation) {
+    const current = () => generation === this.generation &&
+      (this.started || this.nextStartWall <= this.startBy);
+    if (!current()) return false;
+    if (this.ctx.state === 'running') return true;
+    if (this.ctx.state !== 'suspended') return false;
+    let cancel, timer;
+    const cancelled = new Promise(resolve => {
+      cancel = resolve;
+      this.resumeWaiters.add(cancel);
+      if (!this.started && Number.isFinite(this.startBy)) {
+        timer = setTimeout(() => resolve(false), Math.max(0, this.startBy - this.nextStartWall));
+      }
+    });
+    try {
+      const resumed = await Promise.race([this.ctx.resume().then(() => true), cancelled]);
+      return resumed && current() && this.ctx.state === 'running';
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      this.resumeWaiters.delete(cancel);
+    }
+  }
+
+  async _shapeAndSchedule(audioBuffer, shape, generation) {
+    if (!this.started && this.nextStartWall > this.startBy) return false;
+    let tempo = shape.resolveTempo ? shape.resolveTempo() : shape.tempo;
+    tempo = Number.isFinite(tempo) && tempo > 0 ? tempo : 1;
+    const pitch = Number.isFinite(shape.pitch) && shape.pitch > 0 ? shape.pitch : 1;
+    // Tiny stream chunks keep their existing cheap synchronous path.
+    if (audioBuffer.duration <= 0.24 || audioBuffer.duration > 30 || Math.abs(pitch / tempo - 1) <= 0.015) {
+      return this.enqueueBuffer(audioBuffer, {...shape, tempo});
+    }
+    if (!this.shaper) this.shaper = new NtAudioShaper();
+    let buffer;
+    // Fit once more after processing; the audio clock and source start are
+    // always recomputed by enqueueBuffer, including the 60ms jitter buffer.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const channels = audioBuffer.numberOfChannels || 1;
+      const mono = new Float32Array(audioBuffer.length);
+      for (let c = 0; c < channels; c++) {
+        const data = audioBuffer.getChannelData(c);
+        for (let i = 0; i < mono.length; i++) mono[i] += data[i] / channels;
+      }
+      const samples = await this.shaper.stretch(mono, pitch / tempo, audioBuffer.sampleRate);
+      if (!samples || generation !== this.generation) return false;
+      buffer = this.ctx.createBuffer(1, samples.length, audioBuffer.sampleRate);
+      buffer.getChannelData(0).set(samples);
+      const updated = shape.resolveTempo ? shape.resolveTempo() : tempo;
+      if (attempt || !(updated > tempo * 1.015)) break;
+      tempo = updated;
+    }
+    if (!await this._ready(generation) || generation !== this.generation) return false;
+    return this.enqueueBuffer(buffer, {...shape, tempo, prepared: true});
+  }
+
+  enqueuePcm16Async(arrayBuffer, sampleRate, shape = {}) {
+    return this._enqueueWork(async generation => {
+      if (shape.stream) {
+        // A provider may deliver many seconds in a single packet. Keep the
+        // fixed WSOLA joins, but let cancellation run between small batches.
+        const bytes = new Uint8Array(arrayBuffer), batch = Math.max(2, Math.round(sampleRate * 0.12) * 2);
+        let scheduled = false;
+        for (let offset = 0; offset < bytes.length; offset += batch) {
+          if (!await this._ready(generation) || generation !== this.generation) return false;
+          scheduled = this.enqueuePcm16(bytes.slice(offset, offset + batch).buffer, sampleRate, shape) || scheduled;
+          if (offset + batch < bytes.length) await new Promise(resolve => setTimeout(resolve, 0));
+        }
+        return scheduled;
+      }
+      let bytes = new Uint8Array(arrayBuffer);
+      if (this.carry) {
+        const merged = new Uint8Array(bytes.length + 1);
+        merged.set(this.carry); merged.set(bytes, 1); bytes = merged; this.carry = null;
+      }
+      if (bytes.length % 2) { this.carry = bytes.slice(-1); bytes = bytes.subarray(0, bytes.length - 1); }
+      if (!bytes.length) return false;
+      const buffer = this.ctx.createBuffer(1, bytes.length / 2, sampleRate), samples = buffer.getChannelData(0);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
+      return this._shapeAndSchedule(buffer, shape, generation);
+    });
+  }
+
   /**
    * Schedule an AudioBuffer right after the previous one.
    * shape.tempo speeds speech up keeping its pitch; shape.pitch shifts pitch
@@ -130,7 +235,9 @@ class NtAudioPlayer {
     // pitch/tempo leaves exactly `tempo` speed and `pitch` pitch. Without the
     // stretcher fall back to rate change, except when preservePitch requests
     // a natural-speed short tail rather than a pitch-shifted last syllable.
-    if (Math.abs(ratio - 1) > 0.015 && canStretch) {
+    if (shape.prepared) {
+      rate *= pitch;
+    } else if (Math.abs(ratio - 1) > 0.015 && canStretch) {
       buffer = ntStretchAudioBuffer(this.ctx, audioBuffer, ratio);
       stretched = true;
       rate *= pitch;
@@ -143,6 +250,10 @@ class NtAudioPlayer {
       cropped.getChannelData(0).set(buffer.getChannelData(0).subarray(0, length));
       buffer = cropped;
     }
+    // Synchronous shaping can also consume time: refresh the clock immediately
+    // before scheduling, and apply the first-start limit to the audible start.
+    startAt = Math.max(startAt, this.ctx.currentTime + (fresh ? 0.06 : 0));
+    if (!this.started && Date.now() + Math.max(0, startAt - this.ctx.currentTime) * 1000 > this.startBy) return false;
     const endAt = Math.min(startAt + buffer.duration / rate, this.deadline);
     if (endAt <= startAt) return false;
 
@@ -163,6 +274,7 @@ class NtAudioPlayer {
     src.connect(g);
     g.connect(this.destination);
     src.start(startAt);
+    this.started = true;
     // Schedule expiry on the audio clock so a throttled background JS timer cannot
     // let an old phrase continue playing after the cue has ended.
     if (Number.isFinite(this.deadline)) src.stop(endAt);
@@ -179,10 +291,18 @@ class NtAudioPlayer {
   }
 
   clear() {
+    this.generation++;
+    for (const cancel of this.resumeWaiters) cancel(false);
+    this.resumeWaiters.clear();
+    this.shaper?.cancel();
+    this.shaping.clear();
+    this.work = Promise.resolve();
     for (const s of this.sources) { try { s.stop(); } catch (e) { /* ignore */ } }
     this.sources.clear();
     this.endTime = 0;
     this.deadline = Infinity;
+    this.startBy = Infinity;
+    this.started = false;
     this.carry = null;
     this.pcmPending = null;
     this.pcmJoinSource = null;
@@ -191,17 +311,19 @@ class NtAudioPlayer {
   }
 
   whenIdle() {
-    if (!this.sources.size) return Promise.resolve();
+    if (!this.sources.size && !this.shaping.size) return Promise.resolve();
     return new Promise(resolve => this.idleWaiters.add(resolve));
   }
   _notifyIdle() {
-    if (this.sources.size) return;
+    if (this.sources.size || this.shaping.size) return;
     for (const resolve of this.idleWaiters) resolve();
     this.idleWaiters.clear();
   }
 
   destroy() {
     this.clear();
+    this.shaper?.destroy();
+    this.shaper = null;
     clearInterval(this.timer);
     this._setSpeaking(false);
   }

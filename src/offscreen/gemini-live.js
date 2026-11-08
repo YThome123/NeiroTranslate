@@ -2,6 +2,8 @@
 // Default model: gemini-3.5-live-translate-preview (translationConfig, continuous stream, no turn-taking).
 const NT_GEMINI_WS = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const NT_SENTENCE_END = /[.!?…。！？]["»”')\]]?\s*$/;
+const NT_GEMINI_AUDIO_WINDOW_MS = 3000;
+const NT_GEMINI_BUFFER_BYTES = 128 * 1024;
 
 class NtGeminiLive {
   constructor(opts) {
@@ -22,6 +24,9 @@ class NtGeminiLive {
     this.variant = 0;
     this.resumeHandle = null;
     this.retries = 0;
+    this.transportFailures = 0;
+    this.healthyAudioSince = null;
+    this.lastAudioSentAt = null;
     this.outBuf = '';
     this.inBuf = '';
     this.outTimer = null;
@@ -37,6 +42,7 @@ class NtGeminiLive {
   connect() {
     this.closedByUser = false;
     this.ready = false;
+    this.healthyAudioSince = this.lastAudioSentAt = null;
     if (!this.apiKey) return this.onFatal('needGeminiKey');
     this.onStatus(this.retries ? 'reconnecting' : 'connecting');
 
@@ -47,7 +53,7 @@ class NtGeminiLive {
       return this.onFatal('WebSocket: ' + e.message);
     }
     this.ws = ws;
-    ws.onopen = () => this._send(this._setupMessage());
+    ws.onopen = () => { if (ws === this.ws && !this.closedByUser) this._send(this._setupMessage()); };
     ws.onmessage = (ev) => { if (ws === this.ws && !this.closedByUser) return this._onMessage(ev, ws); };
     ws.onclose = (ev) => this._onClose(ev, ws);
     ws.onerror = () => { /* details arrive in onclose */ };
@@ -69,21 +75,43 @@ class NtGeminiLive {
     if (this.ws) { try { this.ws.close(1000, 'bye'); } catch (e) { /* ignore */ } }
     this.ws = null;
     this.ready = false;
+    this.healthyAudioSince = this.lastAudioSentAt = null;
     this.pending = [];
   }
 
   /** @param {string} base64Pcm16k 100 ms of 16 kHz mono PCM */
   sendAudio(base64Pcm16k) {
+    if (this.closedByUser) return;
     const msg = { realtimeInput: { audio: { data: base64Pcm16k, mimeType: 'audio/pcm;rate=16000' } } };
-    if (!this.ready) {
-      this.pending.push(msg);
-      if (this.pending.length > 30) this.pending.shift(); // keep the last ~3 s
+    if (!this.ready || this.ws?.readyState !== WebSocket.OPEN) {
+      this._queueAudio(msg);
       return;
     }
     this._send(msg);
   }
 
   // ─── internals ─────────────────────────────────────────────
+  _queueAudio(message) {
+    const at = Date.now();
+    this.pending = this.pending.filter(item => at - item.at < NT_GEMINI_AUDIO_WINDOW_MS);
+    this.pending.push({at, message});
+    if (this.pending.length > 30) this.pending.shift();
+  }
+
+  _recoverTransport(message) {
+    // Already queued browser bytes cannot be removed: abandon that socket.
+    // Keep only the capture packet which noticed the failure, then fresh input.
+    this.pending = [];
+    if (message?.realtimeInput?.audio) this._queueAudio(message);
+    this.resumeHandle = null;
+    if (++this.transportFailures > 6) {
+      this.close();
+      this.onFatal('raw|The audio connection cannot keep up. Check your network and restart translation.');
+      return;
+    }
+    this._reconnect(Math.min(250 * 2 ** (this.transportFailures - 1), 4000), true);
+  }
+
   _setupMessage() {
     const setup = { model: 'models/' + this.model };
 
@@ -118,7 +146,28 @@ class NtGeminiLive {
   }
 
   _send(obj) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.closedByUser) return false;
+    try {
+      const encoded = JSON.stringify(obj);
+      if (obj.realtimeInput?.audio && (Number(this.ws.bufferedAmount) || 0) + encoded.length > NT_GEMINI_BUFFER_BYTES) {
+        this._recoverTransport(obj);
+        return false;
+      }
+      this.ws.send(encoded);
+      if (this.ready && obj.realtimeInput?.audio) {
+        const now = Date.now();
+        // Setup/backoff and idle capture gaps are not evidence of a healthy stream.
+        if (this.lastAudioSentAt === null || now - this.lastAudioSentAt >= NT_GEMINI_AUDIO_WINDOW_MS) {
+          this.healthyAudioSince = now;
+        }
+        this.lastAudioSentAt = now;
+        if (now - this.healthyAudioSince >= 10000) this.transportFailures = 0;
+      }
+      return true;
+    } catch (error) {
+      this._recoverTransport(obj);
+      return false;
+    }
   }
 
   async _onMessage(ev, socket = this.ws) {
@@ -139,7 +188,10 @@ class NtGeminiLive {
       this.onStatus('ready');
       const queued = this.pending;
       this.pending = [];
-      queued.forEach((m) => this._send(m));
+      for (const item of queued) {
+        if (socket !== this.ws || !this.ready) break;
+        if (Date.now() - item.at < NT_GEMINI_AUDIO_WINDOW_MS) this._send(item.message);
+      }
       return;
     }
 
@@ -210,6 +262,7 @@ class NtGeminiLive {
     if (ws !== this.ws) return; // stale socket
     const wasReady = this.ready;
     this.ready = false;
+    this.healthyAudioSince = this.lastAudioSentAt = null;
     clearTimeout(this.connectTimer);
     if (this.closedByUser) return;
     const reason = ev.reason || '';
@@ -237,14 +290,19 @@ class NtGeminiLive {
     this._reconnect(Math.min(500 * this.retries, 4000));
   }
 
-  _reconnect(delay) {
+  _reconnect(delay, discard = false) {
     this.ready = false;
+    this.healthyAudioSince = this.lastAudioSentAt = null;
     clearTimeout(this.connectTimer);
     clearTimeout(this.reconnectTimer);
     const old = this.ws;
     this.ws = null;
     if (old) { try { old.onclose = null; old.close(); } catch (e) { /* ignore */ } }
-    this._flushOut(true);
+    if (discard) {
+      this.outBuf = this.inBuf = '';
+      clearTimeout(this.outTimer);
+      clearTimeout(this.inTimer);
+    } else this._flushOut(true);
     this.onStatus('reconnecting');
     this.reconnectTimer = setTimeout(() => { if (!this.closedByUser) this.connect(); }, delay);
   }

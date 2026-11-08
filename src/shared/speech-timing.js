@@ -21,7 +21,7 @@
     DOM_SYNC_GRACE_MS: 650,
     // A started phrase is cut only when it overran its slot by this much AND a
     // newer phrase is waiting. Without a waiting phrase it always finishes.
-    OVERRUN_CUT_MS: 700,
+    OVERRUN_CUT_MS: 300,
     // ...unless it is expected to end within this anyway: then it finishes.
     NEAR_END_MS: 800,
     // A waiting phrase is dropped only if, even at the fastest tempo, it would

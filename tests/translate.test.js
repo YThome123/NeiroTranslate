@@ -8,6 +8,97 @@ function translator(fetch, globals = {}) {
   return ctx.self.ntTranslate;
 }
 
+test('explicit identical languages return cleaned text without spending network quota',async()=>{
+  let calls=0;
+  const translate=translator(async()=>{calls++;return {ok:false,status:429};});
+  for(const [source,target,detected] of [['en','en','en'],[' EN ','en','en'],['zh-CN',' zh-cn ','zh-cn']]){
+    const result=await translate(' Hello\n world ',target,source);
+    assert.equal(calls,0,'identity must not contact providers even during an outage');
+    assert.equal(result.ok,true);assert.equal(result.text,'Hello world');
+    assert.equal(result.detected,detected);assert.equal(result.provider,'identity');
+  }
+  const abort=new AbortController();abort.abort();
+  assert.equal((await translate('Hello','en','en',abort.signal)).cancelled,true);
+  assert.equal((await translate('Hello','auto','auto')).ok,false);
+  assert.equal(calls,0);
+});
+
+test('identity never collapses regional variants or guesses an automatic source',async()=>{
+  let calls=0;
+  const translate=translator(async()=>{calls++;return {ok:true,json:async()=>[[['Translated']],null,'zh-CN']};});
+  for(const [source,target] of [['zh-CN','zh-TW'],['auto','en'],[undefined,'en']]){
+    const result=await translate('Example',target,source);
+    assert.equal(result.text,'Translated');assert.equal(result.provider,'google');
+  }
+  assert.equal(calls,3);
+});
+
+test('simultaneous current and prefetched text shares one network translation', async () => {
+  let calls = 0, release;
+  const translate = translator(() => {calls++; return new Promise(resolve => {release = resolve;});});
+  const first = translate('Hello', 'ru', 'en');
+  const second = translate('  Hello  ', 'ru', 'en');
+  assert.equal(calls, 1);
+  release({ok:true,json:async () => [[['Привет']],null,'en']});
+  assert.equal((await first).text, 'Привет');
+  assert.equal((await second).text, 'Привет');
+});
+
+test('one cancelled translation subscriber cannot cancel a live subscriber', async () => {
+  let release, transport;
+  const translate = translator((url, options) => {
+    transport = options.signal;
+    return new Promise(resolve => {release = resolve;});
+  });
+  const abort = new AbortController();
+  const first = translate('Hello', 'ru', 'en', abort.signal);
+  const second = translate('Hello', 'ru', 'en');
+  abort.abort();
+  assert.equal((await first).cancelled, true);
+  assert.equal(transport.aborted, false);
+  release({ok:true,json:async () => [[['Привет']],null,'en']});
+  assert.equal((await second).ok, true);
+});
+
+test('cancelling every subscriber aborts shared work and permits a fresh attempt', async () => {
+  const requests = [];
+  const translate = translator((url, options) => {
+    const entry = {signal:options.signal}; requests.push(entry);
+    return new Promise(resolve => {entry.resolve = resolve;});
+  });
+  const a = new AbortController(), b = new AbortController();
+  const first = translate('Hello', 'ru', 'en', a.signal);
+  const second = translate('Hello', 'ru', 'en', b.signal);
+  a.abort(); b.abort();
+  assert.equal((await first).cancelled, true);
+  assert.equal((await second).cancelled, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].signal.aborted, true);
+  const fresh = translate('Hello', 'ru', 'en');
+  assert.equal(requests.length, 2);
+  requests[1].resolve({ok:true,json:async () => [[['Новый перевод']],null,'en']});
+  assert.equal((await fresh).text, 'Новый перевод');
+});
+
+test('rate-limited Google hosts are skipped until Retry-After expires', async () => {
+  let now = 1000, primaryCalls = 0;
+  class Clock extends Date {static now() {return now;}}
+  const translate = translator(async url => {
+    if (new URL(url).host === 'translate.googleapis.com') {
+      primaryCalls++;
+      return {ok:false,status:429,headers:new Headers({'Retry-After':'2'})};
+    }
+    if (url.includes('mymemory')) return {ok:false,status:503};
+    return {ok:true,json:async () => [[['Перевод']],null,'en']};
+  }, {Date:Clock});
+  assert.equal((await translate('One', 'ru', 'en')).ok, true);
+  assert.equal((await translate('Two', 'ru', 'en')).ok, true);
+  assert.equal(primaryCalls, 1, 'the next cue must not wait on the same throttled host');
+  now = 4000;
+  assert.equal((await translate('Three', 'ru', 'en')).ok, true);
+  assert.equal(primaryCalls, 2, 'expired cooldown must allow a recovery probe');
+});
+
 function translationClock() {
   let now = 0, nextId = 0;
   const timers = new Map();

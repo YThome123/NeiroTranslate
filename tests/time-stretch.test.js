@@ -38,7 +38,7 @@ test('degenerate input is handled without throwing or hanging', () => {
   assert.deepEqual(ntTimeStretch(same, 1.005, RATE), same);
 });
 
-function playerHarness() {
+function playerHarness(globals = {}) {
   const sources = [];
   const ctx = {
     currentTime: 10, state: 'running',
@@ -53,7 +53,7 @@ function playerHarness() {
       return source;
     }
   };
-  const realm = vm.createContext({self: {}, setInterval: () => 1, clearInterval() {}, Float32Array, Math, Date});
+  const realm = vm.createContext({self: {}, setInterval: () => 1, clearInterval() {}, Float32Array, Math, Date, setTimeout, ...globals});
   vm.runInContext(fs.readFileSync('src/offscreen/time-stretch.js', 'utf8'), realm);
   realm.ntStretchAudioBuffer = realm.self.ntStretchAudioBuffer;
   vm.runInContext(fs.readFileSync('src/offscreen/audio-player.js', 'utf8'), realm);
@@ -91,4 +91,87 @@ test('live stream catch-up speeds up a backlog and drops what is too far behind'
   const count = sources.length;
   player.enqueueBuffer({duration: 1});
   assert.equal(sources.length, count, 'backlog beyond dropAfterSec is discarded');
+});
+
+test('async shaping yields to cancellation and idle includes pending shaping', async () => {
+  const {player,ctx,sources}=playerHarness();
+  const original=buffer(ctx,14), snapshot=original.getChannelData(0).slice();
+  let idle=false;
+  const pending=player.enqueueBufferAsync ? player.enqueueBufferAsync(original,{tempo:1.6}) : Promise.resolve(player.enqueueBuffer(original,{tempo:1.6}));
+  const waiting=player.whenIdle().then(()=>{idle=true;});
+  await Promise.resolve();
+  assert.equal(idle,false);
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(sources.length,0,'no audio is scheduled before cancellation can run');
+  player.clear();
+  assert.equal(await pending,false);
+  await waiting;
+  assert.equal(idle,true);
+  assert.deepEqual(original.getChannelData(0),snapshot,'cached source samples stay intact');
+  assert.equal(sources.length,0);
+});
+
+
+test('cooperative fallback matches synchronous WSOLA samples and tempo exactly',async()=>{
+  const {player,ctx,sources}=playerHarness();const original=buffer(ctx,.5);
+  assert.equal(await player.enqueueBufferAsync(original,{tempo:1.6,pitch:.8}),true);
+  assert.deepEqual(sources[0].buffer.getChannelData(0),ntTimeStretch(original.getChannelData(0),.5,RATE));
+  assert.ok(Math.abs(sources[0].buffer.duration/sources[0].playbackRate.value-.3125)<.001);
+  player.clear();
+});
+
+test('async PCM processing cannot resurrect audio after clear',async()=>{
+  const {player,sources}=playerHarness();
+  const pending=player.enqueuePcm16Async(new ArrayBuffer(RATE*2*14),RATE,{tempo:1.6});
+  await new Promise(resolve=>setTimeout(resolve,0));player.clear();
+  assert.equal(await pending,false);assert.equal(sources.length,0);
+});
+
+function workerHarness() {
+  const workers=[];
+  class Worker {
+    constructor(){this.terminated=false;workers.push(this);}
+    postMessage(job){this.job=job;}
+    complete(){const {id,samples,ratio,sampleRate}=this.job;this.onmessage({data:{id,samples:ntTimeStretch(samples,ratio,sampleRate)}});}
+    terminate(){this.terminated=true;}
+  }
+  return {...playerHarness({Worker}),workers};
+}
+
+test('completed phrase, clear, next phrase reuse the idle worker and destroy releases it',async()=>{
+  const {player,ctx,sources,workers}=workerHarness();
+  const original=buffer(ctx,.5),snapshot=original.getChannelData(0).slice();
+  let pending=player.enqueueBufferAsync(original,{tempo:1.6});
+  await new Promise(setImmediate);workers[0].complete();assert.equal(await pending,true);
+  sources[0].onended();await player.whenIdle();player.clear();
+  assert.equal(workers[0].terminated,false,'clear preserves the completed worker');
+  pending=player.enqueueBufferAsync(original,{tempo:1.6});
+  await new Promise(setImmediate);
+  assert.equal(workers.length,1,'a second phrase uses the already loaded worker');
+  workers[0].complete();assert.equal(await pending,true);
+  assert.deepEqual(original.getChannelData(0),snapshot);
+  assert.deepEqual(sources[1].buffer.getChannelData(0),sources[0].buffer.getChannelData(0));
+  player.destroy();assert.equal(workers[0].terminated,true);
+});
+
+test('clear terminates active shaping immediately and late worker output cannot schedule audio',async()=>{
+  const {player,ctx,sources,workers}=workerHarness();
+  const pending=player.enqueueBufferAsync(buffer(ctx,.5),{tempo:1.6});
+  await new Promise(setImmediate);player.clear();
+  assert.equal(workers[0].terminated,true);
+  assert.equal(await pending,false);await player.whenIdle();
+  workers[0].complete();await new Promise(setImmediate);
+  assert.equal(sources.length,0);player.destroy();
+});
+
+test('a terminated worker error cannot discard its active replacement',async()=>{
+  const {player,ctx,sources,workers}=workerHarness();
+  const first=player.enqueueBufferAsync(buffer(ctx,.5),{tempo:1.6});
+  await new Promise(setImmediate);player.clear();assert.equal(await first,false);
+  const second=player.enqueueBufferAsync(buffer(ctx,.5),{tempo:1.6});
+  await new Promise(setImmediate);assert.equal(workers.length,2);
+  workers[0].onerror();
+  assert.equal(player.shaper.worker===workers[1],true,'obsolete error must retain replacement ownership');
+  workers[1].complete();assert.equal(await second,true);
+  assert.equal(sources.length,1);player.destroy();assert.equal(workers[1].terminated,true);
 });

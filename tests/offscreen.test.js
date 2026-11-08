@@ -251,3 +251,74 @@ test('Yandex speed requested from SpeechKit and the exact correction never excee
   assert.ok(requested*shapes[0].tempo<=1.6+1e-9,`${requested} x ${shapes[0].tempo}`);
   vm.runInContext('clearSpeech()',ctx);
 });
+
+test('late Google response is expired without starting audio or browser fallback', async()=>{
+  let receive,deliver; const messages=[],played=[];
+  const ctx=vm.createContext({...shared,Date,Math,setTimeout,clearTimeout,AbortController,console:{warn(){}},
+    chrome:{runtime:{onMessage:{addListener:fn=>{receive=fn;}},sendMessage:async msg=>messages.push(msg)}},
+    ntGoogleTts:async(text,lang,audio,signal,onBuffer)=>{await new Promise(resolve=>{deliver=resolve;});await onBuffer({duration:1});},
+    audioPlayer:{clear(){},whenIdle:async()=>{},get nextStartWall(){return Date.now()+60;},enqueueBuffer:()=>{played.push(1);return true;}}});
+  vm.runInContext(fs.readFileSync('src/offscreen/offscreen.js','utf8'),ctx);
+  vm.runInContext("sessionId='A';playCtx={currentTime:0};player=audioPlayer",ctx);
+  receive({target:'offscreen',type:'NT_OFF_SPEAK',sessionId:'A',text:'late',lang:{gt:'ru'},settings:{voice:'google'},startBy:Date.now()+20,deadline:Date.now()+3000},{},()=>{});
+  await new Promise(resolve=>setTimeout(resolve,40));
+  deliver();await new Promise(setImmediate);
+  assert.equal(played.length,0);
+  assert.equal(messages.some(m=>m.type==='NT_OFF_VOICE_ERROR'),false);
+  assert.equal(messages.some(m=>m.type==='NT_OFF_VOICE_DONE'),true);
+  vm.runInContext('clearSpeech()',ctx);
+});
+
+for (const voice of ['google','yandex','elevenlabs']) {
+  test(`${voice} rejects first response past startBy even when its expiry timer is throttled`,async()=>{
+    let receive,deliver,now=10000;const played=[],messages=[];
+    const wait=()=>new Promise(resolve=>{deliver=resolve;});
+    const ctx=vm.createContext({...shared,Date:{now:()=>now},Math,AbortController,setTimeout:()=>1,clearTimeout(){},console:{warn(){}},
+      chrome:{runtime:{onMessage:{addListener:fn=>{receive=fn;}},sendMessage:async msg=>messages.push(msg)}},
+      ntGoogleTts:async(text,lang,audio,signal,callback)=>{await wait();await callback({duration:1});},
+      ntYandexSupports:()=>true,ntYandexTts:async()=>{await wait();return new ArrayBuffer(96000);},
+      ntElevenLabsStream:async(text,lang,s,callback)=>{await wait();await callback(new ArrayBuffer(48000),24000);},
+      audioPlayer:{clear(){},whenIdle:async()=>{},get nextStartWall(){return now+60;},
+        enqueueBuffer(){played.push(1);return true;},enqueuePcm16(){played.push(1);return true;}}});
+    vm.runInContext(fs.readFileSync('src/offscreen/offscreen.js','utf8'),ctx);
+    vm.runInContext("sessionId='A';playCtx={currentTime:0};player=audioPlayer",ctx);
+    receive({target:'offscreen',type:'NT_OFF_SPEAK',sessionId:'A',text:'late',lang:{gt:'ru'},settings:{voice},startBy:10080,deadline:14000},{},()=>{});
+    now=10100;deliver();await new Promise(setImmediate);
+    assert.equal(played.length,0);assert.equal(messages.some(m=>m.type==='NT_OFF_VOICE_ERROR'),false);
+    assert.equal(messages.some(m=>m.type==='NT_OFF_VOICE_DONE'),true);
+  });
+}
+
+test('Google tail remains valid after first-start expiry and fallback retains startBy on genuine failure',async()=>{
+  let receive,tail,now=10000;const played=[],messages=[],timers=[];
+  const ctx=vm.createContext({...shared,Date:{now:()=>now},Math,AbortController,setTimeout:(fn,ms)=>{timers.push({fn,ms});return timers.length;},clearTimeout(){},console:{warn(){}},
+    chrome:{runtime:{onMessage:{addListener:fn=>{receive=fn;}},sendMessage:async msg=>messages.push(msg)}},
+    ntGoogleTts:async(text,lang,audio,signal,callback)=>{
+      if(text==='fail')throw new Error('network failure');
+      await callback({duration:.2});await new Promise(resolve=>{tail=resolve;});await callback({duration:.2});
+    },audioPlayer:{clear(){this.started=false;},whenIdle:async()=>{},get nextStartWall(){return now+60;},
+      enqueueBuffer(){this.started=true;played.push(1);return true;}}});
+  vm.runInContext(fs.readFileSync('src/offscreen/offscreen.js','utf8'),ctx);
+  vm.runInContext("sessionId='A';playCtx={currentTime:0};player=audioPlayer",ctx);
+  const speak=text=>receive({target:'offscreen',type:'NT_OFF_SPEAK',sessionId:'A',text,lang:{gt:'ru'},settings:{voice:'google'},startBy:now+200,deadline:now+4000},{},()=>{});
+  speak('tail');await new Promise(setImmediate);now+=250;
+  timers.find(t=>t.ms===200).fn();tail();await new Promise(setImmediate);
+  assert.equal(played.length,2);assert.equal(messages.some(m=>m.type==='NT_OFF_VOICE_ERROR'),false);
+  speak('fail');await new Promise(setImmediate);
+  assert.equal(messages.find(m=>m.type==='NT_OFF_VOICE_ERROR').startBy,now+200);
+});
+
+test('expired SPEAK is explicitly rejected so the caller releases its owner immediately',()=>{
+  let receive,response;let providerCalls=0;const messages=[];
+  const ctx=vm.createContext({Date:{now:()=>10000},
+    chrome:{runtime:{onMessage:{addListener:fn=>{receive=fn;}},sendMessage:async msg=>messages.push(msg)}},
+    ntGoogleTts:()=>{providerCalls++;}});
+  vm.runInContext(fs.readFileSync('src/offscreen/offscreen.js','utf8'),ctx);
+  vm.runInContext("sessionId='A';voiceEpoch=7",ctx);
+  receive({target:'offscreen',type:'NT_OFF_SPEAK',sessionId:'A',mediaVersion:0,voiceEpoch:7,
+    text:'expired in transit',lang:{gt:'en'},settings:{voice:'google'},startBy:9999,deadline:20000},{},reply=>{response=reply;});
+  assert.equal(response.ok,true);
+  assert.equal(response.ignored || response.cancelled,true,'existing caller completion branch must recognize rejection');
+  assert.equal(providerCalls,0);assert.equal(messages.length,0);
+  assert.equal(vm.runInContext('speech.busy || speech.queue.length > 0 || speech.pendingTimer !== 0',ctx),false);
+});

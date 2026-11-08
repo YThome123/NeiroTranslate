@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "NeiroTranslate — live video & stream translator",
   "short_name": "NeiroTranslate",
-  "version": "3.4.0",
+  "version": "3.4.1",
   "description": "Real-time translation of videos and live streams: translated subtitles and voice-over. Free mode + Gemini Live, ElevenLabs, Yandex SpeechKit.",
   "minimum_chrome_version": "116",
   "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "scripting", "tts"],

@@ -131,7 +131,7 @@ async function ntGoogleTts(text, lang, ctx, signal, onBuffer) {
       buffers.push(buffer);
       restChars -= chunks[i].length;
       // Chunk sizes let the caller time the whole phrase from the first chunk.
-      if (onBuffer) onBuffer(buffer, {chars: chunks[i].length, restChars});
+      if (onBuffer) await onBuffer(buffer, {chars: chunks[i].length, restChars});
     }
     return buffers;
   } finally {
@@ -168,7 +168,7 @@ function ntElevenDialogueStream(text, lang, s, voiceSettings, onPcm, signal) {
     const query = new URLSearchParams({ model_id: s.elevenModel, output_format: 'pcm_24000' });
     if (lang.gt) query.set('language_code', lang.gt.split('-')[0]);
     const socket = new WebSocket('wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input?' + query);
-    let settled = false, audioBytes = 0;
+    let settled = false, audioBytes = 0, delivery = Promise.resolve();
     const finish = error => {
       if (settled) return;
       settled = true;
@@ -196,24 +196,27 @@ function ntElevenDialogueStream(text, lang, s, voiceSettings, onPcm, signal) {
     };
     socket.onmessage = event => {
       if (settled || signal.aborted) return;
-      try {
-        const frame = JSON.parse(event.data);
-        if (frame.error || frame.type === 'error') {
-          const detail = frame.error?.message || frame.error || frame.message || frame.detail || 'Dialogue generation failed';
-          throw new Error('ElevenLabs: ' + String(detail).slice(0, 240));
-        }
-        if (frame.audio) {
-          const binary = atob(frame.audio);
-          const pcm = Uint8Array.from(binary, char => char.charCodeAt(0));
-          if (pcm.byteLength) { onPcm(pcm.buffer, 24000); audioBytes += pcm.byteLength; }
-        }
-        // is_final_audio_for_turn can precede the final encoder bytes. Wait for
-        // the connection's final flush so the end of a word is never lost.
-        if (frame.is_final === true) finish(audioBytes ? null : new Error('ElevenLabs returned no audio'));
-      } catch (error) { finish(error); }
+      delivery = delivery.then(async () => {
+        if (settled || signal.aborted) return;
+        try {
+          const frame = JSON.parse(event.data);
+          if (frame.error || frame.type === 'error') {
+            const detail = frame.error?.message || frame.error || frame.message || frame.detail || 'Dialogue generation failed';
+            throw new Error('ElevenLabs: ' + String(detail).slice(0, 240));
+          }
+          if (frame.audio) {
+            const binary = atob(frame.audio);
+            const pcm = Uint8Array.from(binary, char => char.charCodeAt(0));
+            if (pcm.byteLength) { await onPcm(pcm.buffer, 24000); audioBytes += pcm.byteLength; }
+          }
+          // is_final_audio_for_turn can precede the final encoder bytes. Wait for
+          // the connection's final flush so the end of a word is never lost.
+          if (frame.is_final === true) finish(audioBytes ? null : new Error('ElevenLabs returned no audio'));
+        } catch (error) { finish(error); }
+      });
     };
     socket.onerror = () => finish(new Error('elevenConnectionFailed'));
-    socket.onclose = event => finish(new Error('ElevenLabs stream closed before completion (' + event.code + ')'));
+    socket.onclose = event => { delivery.then(() => finish(new Error('ElevenLabs stream closed before completion (' + event.code + ')'))); };
     if (signal.aborted) onAbort();
   });
 }
@@ -266,7 +269,7 @@ async function ntElevenLabsStream(text, lang, s, onPcm, signal) {
       signal.throwIfAborted();
       if (done) break;
       if (value && value.byteLength) {
-        onPcm(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength), 24000);
+        await onPcm(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength), 24000);
         audioBytes += value.byteLength;
       }
     }

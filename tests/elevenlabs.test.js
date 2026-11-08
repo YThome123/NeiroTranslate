@@ -175,3 +175,22 @@ test('v4 Turbo closes its transport if the audio consumer fails', async () => {
   await assert.rejects(pending, value => value === error);
   assert.equal(h.sockets[0].closed, 1);
 });
+
+test('ElevenLabs HTTP waits for asynchronous PCM scheduling before completing',async()=>{
+  const api=providers(async()=>pcmResponse());let release,done=false;
+  const pending=api.ntElevenLabsStream('Hello',ru,speechSettings,
+    ()=>new Promise(resolve=>{release=resolve;})).then(()=>{done=true;});
+  await new Promise(setImmediate);assert.equal(done,false);
+  release();await pending;assert.equal(done,true);
+});
+
+test('dialogue final frame waits for asynchronous PCM delivery',async()=>{
+  const h=dialogue();let release,done=false;
+  const pending=h.api.ntElevenLabsStream('Hello',ru,h.settings,
+    ()=>new Promise(resolve=>{release=resolve;})).then(()=>{done=true;});
+  const socket=h.sockets[0];socket.open();
+  socket.message({audio:btoa(String.fromCharCode(1,2))});
+  socket.message({is_final:true});socket.end(1000);
+  await new Promise(setImmediate);assert.equal(done,false);
+  release();await pending;assert.equal(done,true);
+});

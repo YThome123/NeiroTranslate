@@ -309,10 +309,17 @@ class Suite:
             for request in before["requests"]
             if request["version"] == before["version"]
         ]
-        elapsed = round(time.time() * 1000 - attempts[0]["at"])
+        first_audio = next(
+            source for source in before["sourceStarts"]
+            if source["version"] == before["version"]
+        )
+        assert first_audio["context"] == "running", first_audio
+        elapsed = round(first_audio["startAt"] - attempts[0]["at"])
         self.metrics["slow_primary_to_backup_audio_ms"] = elapsed
         assert elapsed < 1500, before
         assert len(attempts) == 2
+        assert attempts[0]["host"] == "translate.google.com"
+        assert attempts[1]["host"] != attempts[0]["host"]
         assert attempts[0]["aborted"]
         assert before["starts"] == 1
         self.pause()
@@ -581,15 +588,20 @@ class Suite:
         assert self.audio()["rms"] > 0.01, self.audio()
 
     def subtitle_deadline(self):
-        self.reset(
-            "Hide this finished cue.",
-            voice="off",
-            cues=[[0, 1.5, "Hide this finished cue."]],
-        )
-        self.wait(lambda: bool(self.line()))
+        self.reset("Caption pipeline is ready.", voice="off")
+        self.wait(lambda: "Caption pipeline is ready." in self.line())
+        # Enter the short cue only after startup and initial translation have
+        # completed. Its actual 1.5-second lifetime and expiry margin stay fixed.
+        cue_end = self.page.evaluate("""()=>{
+          const start=document.querySelector('video').currentTime+1;
+          for(const cue of [...track.cues])track.removeCue(cue);
+          track.addCue(new VTTCue(start,start+1.5,'Hide this finished cue.'));
+          return start+1.5;
+        }""")
+        self.wait(lambda: "Hide this finished cue." in self.line())
         self.wait(
             lambda: self.page.evaluate(
-                "document.querySelector('video').currentTime>1.85"
+                "end=>document.querySelector('video').currentTime>end+0.35", cue_end
             )
         )
         assert not self.line(), self.line()
@@ -821,6 +833,7 @@ class Suite:
             ),
         ]:
             self.scenario(name, fn)
+        self.scenario("complete mode plays every queued short cue after its subtitle expired", self.complete_queue)
         self.scenario("no uncaught page errors", lambda: self.assert_no_errors())
         self.sw.evaluate("()=>stop()")
 
@@ -828,6 +841,22 @@ class Suite:
         return self.page.evaluate(
             "()=>document.querySelector('#neirotranslate-root')?.shadowRoot.querySelector('.orig').textContent || ''"
         )
+
+    def complete_queue(self):
+        phrases = [f"Complete line {index}." for index in range(1, 8)]
+        previous_duration = getattr(self, "audio_duration", 8)
+        try:
+            self.sw.evaluate("() => chrome.storage.local.set({syncMode:'complete'})")
+            self.audio_duration = 1.5
+            self.reset("", cues=[[index * 0.4, index * 0.4 + 0.35, text] for index, text in enumerate(phrases)])
+            self.wait(lambda: self.sw.evaluate("() => new Set(qa.requests.map(r => r.text)).size >= 7"), timeout=7000)
+            self.wait(lambda: self.audio()["starts"] >= 7, timeout=20000)
+            self.wait(lambda: self.sw.evaluate("() => !voiceQueue.active && voiceQueue.pendingCount === 0"), timeout=12000)
+            assert self.audio()["starts"] == 7, self.audio()
+            assert self.quiet(), self.audio()
+        finally:
+            self.audio_duration = previous_duration
+            self.sw.evaluate("() => chrome.storage.local.set({syncMode:'realtime'})")
 
     def run_latency(self):
         samples = []
@@ -1090,6 +1119,7 @@ def main():
                 else ctx.wait_for_event("serviceworker")
             )
             # Install navigation must finish before creating a test video tab.
+            sw.evaluate("() => stateLoaded")
             end = time.monotonic() + 30
             while not any(
                 pg.url.endswith("/src/options/options.html") for pg in ctx.pages

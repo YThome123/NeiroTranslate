@@ -11,7 +11,7 @@ class NtSegmenter {
     this.reset();
   }
 
-  reset() { this.committed = ''; this.pending = ''; this.last = ''; this.lastChange = 0; this.lastEmit = ''; this.pendingSince = null; }
+  reset() { this.committed = ''; this.pending = ''; this.last = ''; this.lastChange = 0; this.pendingSince = null; }
 
   static norm(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
 
@@ -40,7 +40,7 @@ class NtSegmenter {
     if (!t) return;
     const since = this.pendingSince ?? at;
     this.committed = (this.committed + ' ' + t).trim().slice(-500);
-    if (t !== this.lastEmit && /[\p{L}\p{N}]/u.test(t)) { this.lastEmit = t; this.emit(t, { since: Math.min(since, at), at }); }
+    if (/[\p{L}\p{N}]/u.test(t)) this.emit(t, { since: Math.min(since, at), at });
     // Whatever is still pending started no earlier than this commit.
     this.pendingSince = at;
   }
@@ -54,7 +54,12 @@ class NtSegmenter {
     const previousChange = this.lastChange;
     this.last = text;
     this.lastChange = now;
-    if (!text) { if (this.pending) this.commit(this.pending, previousChange); this.pending = ''; this.pendingSince = null; return; }
+    if (!text) {
+      if (this.pending) this.commit(this.pending, previousChange);
+      // A vanished caption ends this utterance's deduplication window.
+      this.reset();
+      return;
+    }
 
     let fresh = NtSegmenter.norm(text.slice(this.overlap(text)));
     if (this.pending && fresh && !fresh.startsWith(this.pending) && !NtSegmenter.sameStart(this.pending, fresh)) {

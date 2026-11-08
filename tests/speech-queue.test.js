@@ -1,7 +1,20 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {NtSpeechQueue}=require('../src/shared/speech-queue.js');
+const {fakeClock}=require('./fixtures/clock.js');
 const tick=()=>new Promise(setImmediate);
+
+test('retained complete work survives expiry and rejects overflow without replacing accepted phrases',async()=>{
+  let now=0;const played=[],releases=[];
+  const queue=new NtSpeechQueue({now:()=>now,maxPending:6,play:item=>{played.push(item.id);return new Promise(resolve=>releases.push(resolve));}});
+  queue.enqueue({id:1,startBy:10,retain:true});await tick();
+  for(let id=2;id<=7;id++)assert.equal(queue.enqueue({id,startBy:10,retain:true}),true);
+  assert.equal(queue.enqueue({id:8,startBy:10,retain:true}),false);
+  now=20000;queue.watchOverrun();
+  for(let i=0;i<7;i++){releases.shift()();await tick();}
+  assert.deepEqual(played,[1,2,3,4,5,6,7]);
+  queue.clear();
+});
 
 test('new captions wait for the current phrase rather than aborting it',async()=>{
   const played=[],releases=[];
@@ -63,12 +76,16 @@ test('a phrase overrunning its slot is cut only once a newer phrase waits',async
 });
 
 test('an overrun is armed as a timer and disarmed when the phrase ends',async()=>{
+  const clock=fakeClock();
+  const context={module:{exports:{}},AbortController,...clock.globals};
+  require('node:vm').runInNewContext(require('node:fs').readFileSync('src/shared/speech-queue.js','utf8'),context);
+  const ClockedQueue=context.module.exports.NtSpeechQueue;
   const played=[];let release;
-  const queue=new NtSpeechQueue({maxPending:1,play:(item,signal)=>{played.push({id:item.id,signal});return new Promise(resolve=>{release=resolve;signal.addEventListener('abort',resolve);});}});
-  queue.enqueue({id:'A',startBy:Date.now()+3000,cutAt:Date.now()+40});await tick();
-  queue.enqueue({id:'B',startBy:Date.now()+3000,cutAt:Infinity});
+  const queue=new ClockedQueue({now:clock.now,maxPending:1,play:(item,signal)=>{played.push({id:item.id,signal});return new Promise(resolve=>{release=resolve;signal.addEventListener('abort',resolve);});}});
+  queue.enqueue({id:'A',startBy:3000,cutAt:40});await tick();
+  queue.enqueue({id:'B',startBy:3000,cutAt:Infinity});
   assert.equal(played[0].signal.aborted,false);
-  await new Promise(resolve=>setTimeout(resolve,80));
+  await clock.advance(80);
   assert.equal(played[0].signal.aborted,true);await tick();await tick();
   assert.equal(played[1].id,'B');release();await tick();
   assert.equal(queue.active,false);

@@ -2,8 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
+const {fakeClock} = require('./fixtures/clock.js');
 
-function harness(restored = Promise.resolve({})) {
+function harness(restored = Promise.resolve({}), globals = {}) {
   const events = [], spoken = [];
   const listeners = { onMessage: [], onChanged: [], onUpdated: [], onRemoved: [] };
   const event = name => ({ addListener: fn => listeners[name].push(fn) });
@@ -21,7 +22,7 @@ function harness(restored = Promise.resolve({})) {
       action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
       tts: { stop() {}, getVoices: r => { resolveVoices = r; }, speak: (...a) => spoken.push(a) },
       commands: { onCommand: listener }
-    }
+    }, ...globals
   });
   for (const file of ['src/shared/speech-queue.js', 'src/shared/speech-timing.js', 'src/shared/speakers.js'])
     vm.runInContext(fs.readFileSync(file, 'utf8'), ctx);
@@ -252,14 +253,15 @@ test('translation older than the live budget is not displayed', async () => {
 });
 
 test('a late browser engine start event cannot duck audio after the cue expired', async () => {
-  const h = harness(); await tick();
+  const clock = fakeClock(1000);
+  const h = harness(Promise.resolve({}), clock.globals); await tick();
   const ducks = [];
   h.ctx.chrome.tabs.sendMessage = async (id, msg) => {if (msg.type === 'NT_C_DUCK') ducks.push(msg.on); return {ok:true};};
-  h.ctx.expiry = Date.now() + 40;
+  h.ctx.expiry = clock.now() + 40;
   vm.runInContext("state = {...IDLE_STATE,active:true,tabId:1,source:'captions',voice:'browser'}; speakBrowser('short',{tts:'ru-RU'},{browserRate:1,dubVolume:1},expiry)", h.ctx);
   await tick(); h.resolveVoices([{voiceName:'Russian',lang:'ru-RU'}]); await tick();
   assert.equal(h.spoken.length, 1);
-  await new Promise(resolve => setTimeout(resolve, 60));
+  await clock.advance(60);
   assert.equal(vm.runInContext('ttsBusy', h.ctx), false);
   h.spoken[0][1].onEvent({type:'start'});
   assert.equal(ducks.includes(true), false);
@@ -381,6 +383,53 @@ test('an interrupted browser engine falls back only with the remaining text',asy
   await tick();h.spoken[0][1].onEvent({type:'start'});h.spoken[0][1].onEvent({type:'interrupted',charIndex:6});await tick();
   assert.deepEqual(Array.from(h.ctx.remainders),['second']);
 });
+
+for (const started of [true,false]) {
+  test(`browser failure after first-start expiry ${started ? 'recovers the known remainder' : 'cannot start a fresh fallback'}`,async()=>{
+    const clock=fakeClock(100000),h=harness(Promise.resolve({}),clock.globals);await tick();
+    h.ctx.chrome.tts.getVoices=cb=>cb([{voiceName:'Russian',lang:'ru-RU'}]);
+    h.ctx.chrome.runtime.getContexts=async()=>[{}];
+    h.ctx.chrome.runtime.sendMessage=async msg=>{h.events.push(msg);return {ok:true};};
+    vm.runInContext("state={...IDLE_STATE,active:true,source:'captions',sessionId:'A'};speakBrowser('First words remaining text',{tts:'ru-RU'},{browserRate:1,dubVolume:1,maxTempo:1.6},110000,true,voiceEpoch,101000,{syncEnd:108000})",h.ctx);
+    await tick();
+    const onEvent=h.spoken[0][1].onEvent;
+    if(started){onEvent({type:'start'});onEvent({type:'word',charIndex:12});}
+    // Advance wall time without firing the startup watchdog, reproducing a
+    // delayed platform error callback on a busy service worker.
+    h.ctx.Date={now:()=>102000};
+    onEvent({type:'error',errorMessage:'Engine failed'});await tick();await tick();
+    const requests=h.events.filter(msg=>msg.type==='NT_OFF_SPEAK');
+    assert.equal(requests.length,started?1:0);
+    if(started){
+      assert.equal(requests[0].text,'remaining text');
+      assert.equal(requests[0].deadline,110000);
+      assert.equal(requests[0].startBy,110000);
+      assert.equal(requests[0].syncEnd,108000);
+      assert.equal(requests[0].fallback,true);
+      assert.equal(requests[0].voiceEpoch,vm.runInContext('voiceEpoch',h.ctx));
+    }
+  });
+}
+
+for (const action of ['pause','seek','stop','completion expiry']) {
+  test(`pending known browser remainder remains cancelled by ${action}`,async()=>{
+    const clock=fakeClock(100000),h=harness(Promise.resolve({}),clock.globals);await tick();
+    let release;
+    h.ctx.chrome.tts.getVoices=cb=>cb([{voiceName:'Russian',lang:'ru-RU'}]);
+    h.ctx.chrome.runtime.getContexts=()=>release?Promise.resolve([{}]):new Promise(resolve=>{release=()=>resolve([{}]);});
+    h.ctx.chrome.runtime.sendMessage=async msg=>{h.events.push(msg);return {ok:true};};
+    vm.runInContext("state={...IDLE_STATE,active:true,source:'captions',sessionId:'A'};speakBrowser('First words remaining text',{tts:'ru-RU'},{browserRate:1,dubVolume:1},110000,true,voiceEpoch,101000)",h.ctx);
+    await tick();const onEvent=h.spoken[0][1].onEvent;
+    onEvent({type:'start'});onEvent({type:'word',charIndex:12});
+    h.ctx.Date={now:()=>102000};onEvent({type:'error'});await tick();
+    assert.equal(typeof release,'function','remainder reaches offscreen readiness');
+    if(action==='completion expiry')h.ctx.Date={now:()=>110001};
+    else if(action==='stop')await vm.runInContext('stop()',h.ctx);
+    else vm.runInContext(`handleMediaState({version:1,paused:${action==='pause'}})`,h.ctx);
+    release();await tick();await tick();
+    assert.equal(h.events.some(msg=>msg.type==='NT_OFF_SPEAK'),false);
+  });
+}
 
 test('a long spoken sentence receives time to finish without an unbounded voice deadline',async()=>{
   const h=harness();await tick();h.settings.voice='google';

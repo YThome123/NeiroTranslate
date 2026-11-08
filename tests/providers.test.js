@@ -267,3 +267,13 @@ test('prepared audio is also bounded by decoded memory and expires',async()=>{
   await tts('large first',{gt:'ru'},context);
   assert.equal(calls,4);
 });
+
+test('Google waits for asynchronous playback before delivering its next chunk',async()=>{
+  const tts=googleVoice(async()=>audioResponse('audio'));
+  let release,complete=false;const delivered=[];
+  const pending=tts('x'.repeat(200),{gt:'en'},{decodeAudioData:async()=>({duration:1})},undefined,
+    async buffer=>{delivered.push(buffer);if(delivered.length===1)await new Promise(resolve=>{release=resolve;});}).then(()=>{complete=true;});
+  await new Promise(setImmediate);
+  assert.equal(delivered.length,1);assert.equal(complete,false);
+  release();await pending;assert.equal(delivered.length,2);assert.equal(complete,true);
+});

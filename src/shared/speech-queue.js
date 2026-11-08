@@ -1,4 +1,5 @@
-// A single actual voice at a time, with bounded recent captions waiting behind it.
+// A single actual voice at a time. Realtime keeps recent captions; retained
+// complete-mode work rejects overflow and stays queued until played or cleared.
 // Playback owns its completion promise; pause/settings changes abort the owner.
 // An item may carry `cutAt`: once that time has passed AND a newer item waits,
 // the current item is aborted so the voice catches up with the picture.
@@ -14,7 +15,8 @@ class NtSpeechQueue {
   get pendingCount() { return this.pending.length; }
   peek() { return this.pending[0] || null; }
   enqueue(item) {
-    if (!item || !Number.isFinite(item.startBy) || item.startBy <= this.now()) return false;
+    if (!item || (!item.retain && (!Number.isFinite(item.startBy) || item.startBy <= this.now()))) return false;
+    if (item.retain && this.pending.length >= Math.max(1, this.maxPending)) return false;
     this.pending.push(item);
     while (this.pending.length > Math.max(1, this.maxPending)) this.pending.shift();
     this.pump();
@@ -33,7 +35,7 @@ class NtSpeechQueue {
     const owner = this.current;
     // A waiting phrase that already expired must not cut the current one:
     // that would leave silence where the current phrase could have finished.
-    while (this.pending.length && this.pending[0].startBy <= this.now()) this.pending.shift();
+    while (this.pending.length && !this.pending[0].retain && this.pending[0].startBy <= this.now()) this.pending.shift();
     if (!owner || !this.pending.length || !Number.isFinite(owner.item.cutAt)) return;
     const wait = owner.item.cutAt - this.now();
     if (wait <= 0) {
@@ -53,13 +55,13 @@ class NtSpeechQueue {
     if (this.current) return;
     let item;
     while ((item = this.pending.shift())) {
-      if (item.startBy > this.now()) break;
+      if (item.retain || item.startBy > this.now()) break;
     }
     if (!item) return;
     const generation = this.generation, controller = new AbortController();
     const owner = {item, controller}; this.current = owner;
     Promise.resolve().then(() => {
-      if (!controller.signal.aborted && item.startBy > this.now()) return this.play(item, controller.signal);
+      if (!controller.signal.aborted && (item.retain || item.startBy > this.now())) return this.play(item, controller.signal);
     }).catch(error => {
       if (generation === this.generation && !controller.signal.aborted) {
         try { this.onError(error, item); } catch (ignored) { /* Do not strand the queue. */ }

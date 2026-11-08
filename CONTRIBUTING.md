@@ -30,6 +30,7 @@ python tests/e2e.py
 python tests/playback-e2e.py
 python tests/stream-voices-e2e.py
 python tests/speakers-e2e.py
+python tests/audio-shaping-e2e.py
 python tests/elevenlabs-e2e.py
 ```
 

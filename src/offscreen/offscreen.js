@@ -30,7 +30,7 @@ const speakerClusters = typeof NtSpeakerClusters === 'function' ? new NtSpeakerC
 let playerSpeaking = false;
 let externalDuck = false;
 
-const speech = { queue: [], busy: false, abort: null, generation: 0, expiryTimer: 0 };
+const speech = { queue: [], busy: false, abort: null, generation: 0, expiryTimer: 0, pendingTimer: 0 };
 let preparing = null;
 // Only the last completed line, held in memory. Cancelled, cut or failed speech
 // must never condition the next generation as if the listener had heard it.
@@ -240,12 +240,14 @@ function connectGemini() {
 
 // ─── Voice-over queue (Google / ElevenLabs / Yandex) ────────
 function speakEnqueue(text, lang, s, deadline = Date.now() + 2500, fallback = false, token = voiceEpoch, timing = {}) {
-  if (mediaPaused || Date.now() > deadline) return;
+  const startBy = Number.isFinite(timing?.startBy) ? timing.startBy : deadline;
+  if (mediaPaused || Date.now() > deadline || Date.now() > startBy) return false;
   // A new caption owns playback immediately, including when the old fetch is hung.
   clearSpeech(true);
   speech.queue.push({ text, lang, s, deadline, fallback, token, timing: timing || {} });
   while (speech.queue.length > 1) speech.queue.shift();
   pumpSpeech();
+  return true;
 }
 
 async function pumpSpeech() {
@@ -259,6 +261,7 @@ async function pumpSpeech() {
   player.catchUp = false;
   const { text, lang, deadline, fallback, token } = item;
   const timing = item.timing || {};
+  const startBy = Number.isFinite(timing.startBy) ? timing.startBy : deadline;
   const voice = timing.voice || {};
   // Speaker-specific provider voice (second Yandex/ElevenLabs voice).
   const s = Object.assign({}, item.s, voice.yandexVoice ? { yandexVoice: voice.yandexVoice } : {},
@@ -272,6 +275,7 @@ async function pumpSpeech() {
   const tempoFor = (durationMs, base = 1, max = maxTempo) => syncEnd
     ? ntPlanTempo({ speechMs: durationMs, availableMs: syncEnd - player.nextStartWall, base, max }) : base;
   player.deadline = playCtx.currentTime + Math.max(0, deadline - Date.now()) / 1000;
+  player.startBy = startBy;
   speech.abort = new AbortController();
   const controller = speech.abort;
   const timeout = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
@@ -279,6 +283,13 @@ async function pumpSpeech() {
     if (gen === speech.generation) {clearSpeech();send({type:'NT_OFF_VOICE_DONE',voiceEpoch:token});}
   }, Math.max(1, deadline - Date.now()));
   let emittedAudio = false;
+  const canSchedule = () => gen === speech.generation && !mediaPaused && Date.now() <= deadline &&
+    (emittedAudio || player.started || (player.nextStartWall || Date.now() + 60) <= startBy);
+  speech.pendingTimer = setTimeout(() => {
+    if (gen === speech.generation && !emittedAudio && !player.started) {
+      clearSpeech(); send({type:'NT_OFF_VOICE_DONE',voiceEpoch:token});
+    }
+  }, Math.max(1, startBy - Date.now()));
   let fallbackPending = false;
   let elevenCompleted = false;
   // Tell the worker when the scheduled audio ends, so a phrase about to finish
@@ -294,14 +305,14 @@ async function pumpSpeech() {
       const correction = tempo / elevenSpeed;
       const previous = s.elevenContinuity !== false && elevenContext?.key === elevenKey && Date.now() - elevenContext.at < 8000
         ? elevenContext.text : '';
-      await ntElevenLabsStream(text, lang, Object.assign({}, s, { elevenSpeed, elevenPreviousText: previous }), (pcm, rate) => {
-        if (gen === speech.generation && !mediaPaused && Date.now() <= deadline) {
-          const scheduled = player.enqueuePcm16(pcm, rate,
+      await ntElevenLabsStream(text, lang, Object.assign({}, s, { elevenSpeed, elevenPreviousText: previous }), async (pcm, rate) => {
+        if (canSchedule()) {
+          const scheduled = await (player.enqueuePcm16Async || player.enqueuePcm16).call(player, pcm, rate,
             { tempo: correction, stream: Math.abs(correction - 1) > 0.015, preservePitch: true });
-          if (scheduled) { emittedAudio = true; reportEnd(); }
+          if (gen === speech.generation && scheduled) { emittedAudio = true; reportEnd(); }
         }
       }, speech.abort.signal);
-      if (gen === speech.generation && !mediaPaused && Date.now() <= deadline && player.flushPcm16?.()) {
+      if (canSchedule() && player.flushPcm16?.()) {
         emittedAudio = true; reportEnd();
       }
       elevenCompleted = emittedAudio;
@@ -311,32 +322,34 @@ async function pumpSpeech() {
       const base = Number(s.yandexSpeed) || 1;
       const requested = Math.min(3, tempoFor(ntEstimateSpeechMs(text), base));
       const pcm = await ntYandexTts(text, lang, Object.assign({}, s, { yandexSpeed: requested }), speech.abort.signal);
-      if (gen === speech.generation && !mediaPaused && Date.now() <= deadline) {
+      if (canSchedule()) {
         const durationMs = pcm.byteLength / 2 / 48000 * 1000;
         // Already synthesized at `requested`; the correction keeps the product <= maxTempo.
-        player.enqueuePcm16(pcm, 48000, { tempo: tempoFor(durationMs, 1, Math.max(1, maxTempo / requested)), pitch });
-        reportEnd();
+        const resolveTempo = () => tempoFor(durationMs, 1, Math.max(1, maxTempo / requested));
+        const scheduled = await (player.enqueuePcm16Async || player.enqueuePcm16).call(player, pcm, 48000,
+          { tempo: resolveTempo(), pitch, resolveTempo });
+        if (gen === speech.generation && scheduled !== false) { emittedAudio = true; reportEnd(); }
       }
     } else {
       // Google Translate voice (unofficial web endpoint). The first chunk's
       // measured speed predicts the rest of a long phrase.
       let charsPerMs = 0;
-      await ntGoogleTts(text, lang, playCtx, speech.abort.signal, (buffer, info = {}) => {
-        if (gen !== speech.generation || mediaPaused || Date.now() > deadline) return;
+      await ntGoogleTts(text, lang, playCtx, speech.abort.signal, async (buffer, info = {}) => {
+        if (!canSchedule()) return;
         const durationMs = buffer.duration * 1000;
         if (info.chars > 0 && durationMs > 0) charsPerMs = info.chars / durationMs;
         const restMs = charsPerMs > 0 ? (info.restChars || 0) / charsPerMs : 0;
-        const tempo = tempoFor(durationMs + restMs, 1);
-        emittedAudio = true;
-        player.enqueueBuffer(buffer, { tempo, pitch });
-        reportEnd();
+        const resolveTempo = () => tempoFor(durationMs + restMs, 1);
+        const scheduled = await (player.enqueueBufferAsync || player.enqueueBuffer).call(player, buffer,
+          { tempo: resolveTempo(), pitch, resolveTempo });
+        if (gen === speech.generation && scheduled !== false) { emittedAudio = true; reportEnd(); }
       });
     }
   } catch (e) {
-    if (gen === speech.generation) {
+    if (canSchedule()) {
       console.warn('[NeiroTranslate] voice error', e);
       const detail = e.name === 'AbortError' ? 'voiceRequestTimeout' : e.message;
-      if (s.voice === 'google' && !emittedAudio) {fallbackPending=true;send({type:'NT_OFF_VOICE_ERROR',text,lang,deadline,fallback,detail,voiceEpoch:token,
+      if (s.voice === 'google' && !emittedAudio && !player.started) {fallbackPending=true;send({type:'NT_OFF_VOICE_ERROR',text,lang,deadline,startBy,fallback,detail,voiceEpoch:token,
         syncEnd,speakerKey:voice.speakerKey || null});}
       else send({ type: 'NT_OFF_STATUS', code: 'voice_error', detail, voiceEpoch:token });
     }
@@ -353,6 +366,7 @@ async function pumpSpeech() {
     send({type:'NT_OFF_VOICE_DONE',voiceEpoch:token});
   }
   clearTimeout(speech.expiryTimer);
+  clearTimeout(speech.pendingTimer);
   speech.abort = null;
   speech.busy = false;
   pumpSpeech();
@@ -361,6 +375,7 @@ async function pumpSpeech() {
 function clearSpeech(keepElevenContext = false) {
   if (!keepElevenContext || speech.busy) elevenContext = null;
   clearTimeout(speech.expiryTimer);
+  clearTimeout(speech.pendingTimer);
   speech.generation++;
   speech.queue = [];
   if (speech.abort) { try { speech.abort.abort(); } catch (e) { /* ignore */ } }
@@ -431,11 +446,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       sendResponse({ ok: true, capture: !!(stream && analyser) });
       return false;
-    case 'NT_OFF_SPEAK':
-      speakEnqueue(msg.text, msg.lang, msg.settings, msg.deadline, msg.fallback, msg.voiceEpoch,
-        { syncEnd: msg.syncEnd, maxTempo: msg.maxTempo, voice: msg.voice });
-      sendResponse({ ok: true });
+    case 'NT_OFF_SPEAK': {
+      const accepted = speakEnqueue(msg.text, msg.lang, msg.settings, msg.deadline, msg.fallback, msg.voiceEpoch,
+        { syncEnd: msg.syncEnd, maxTempo: msg.maxTempo, voice: msg.voice, startBy: msg.startBy });
+      sendResponse(accepted === false ? { ok: true, ignored: true } : { ok: true });
       return false;
+    }
     case 'NT_OFF_SPEAKER':
       sendResponse({ ok: true, speaker: speakerAt(msg.from, msg.to, msg.previous) });
       return false;

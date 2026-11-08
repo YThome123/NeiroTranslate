@@ -1,6 +1,6 @@
 // Loaded ONLY into the temporary E2E extension copy, never into a release.
 // Substitute the HTTP boundary; retain real decoding, scheduling and WebAudio output.
-const qa = {mode:'ok', requests:[], pending:[], starts:0, stops:0, immediateStops:0, duration:8, analyser:null, gain:null};
+const qa = {mode:'ok', requests:[], pending:[], starts:0, sourceStarts:[], stops:0, immediateStops:0, duration:8, analyser:null, gain:null};
 const qaFetch = globalThis.fetch;
 function qaWave() {
   const count = Math.floor(24000 * qa.duration), bytes = new ArrayBuffer(44 + count * 2), v = new DataView(bytes);
@@ -31,7 +31,14 @@ globalThis.fetch = async (url, options) => {
   return new Response(qaWave(), {headers:{'Content-Type':'audio/wav'}});
 };
 const qaStart = AudioBufferSourceNode.prototype.start, qaStop = AudioBufferSourceNode.prototype.stop;
-AudioBufferSourceNode.prototype.start = function(...args) {qa.starts++; return qaStart.apply(this,args);};
+AudioBufferSourceNode.prototype.start = function(...args) {
+  const scheduledAt=Date.now(), audioNow=this.context.currentTime;
+  const result=qaStart.apply(this,args);
+  qa.starts++;
+  qa.sourceStarts.push({scheduledAt,startAt:scheduledAt+Math.max(0,(args[0] || 0)-audioNow)*1000,
+    version:mediaVersion,context:this.context.state});
+  return result;
+};
 AudioBufferSourceNode.prototype.stop = function(...args) {qa.stops++;if(!args.length)qa.immediateStops++;return qaStop.apply(this,args);};
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type !== 'NT_QA_AUDIO') return false;
@@ -44,7 +51,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   }
   const samples = new Float32Array(256);
   qa.analyser?.getFloatTimeDomainData(samples);
-  reply({ok:true, requests:qa.requests, pending:qa.pending.length, starts:qa.starts, stops:qa.stops, immediateStops:qa.immediateStops,
+  reply({ok:true, requests:qa.requests, pending:qa.pending.length, starts:qa.starts, sourceStarts:qa.sourceStarts, stops:qa.stops, immediateStops:qa.immediateStops,
     sources:player?.sources.size || 0, ahead:player?.aheadSec || 0, speaking:!!player?.speaking,
     rms:Math.sqrt(samples.reduce((sum,x) => sum+x*x,0)/samples.length),
     busy:speech.busy, queue:speech.queue.length, generation:speech.generation, paused:mediaPaused,
