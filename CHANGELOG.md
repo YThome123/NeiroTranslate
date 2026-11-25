@@ -4,6 +4,8 @@
 
 Audit fixes and more responsive audio cancellation.
 
+- Keep provider keys and history in trusted extension contexts. Send the video tab only the preferences needed for playback and subtitles.
+- Release tab streams that arrive after Stop. Drop stale speaker results before queuing real-time speech and bound Gemini reconnects after repeated short-lived handshakes.
 - Separate the first audible start deadline from the completion deadline across browser/Google fallbacks and all offscreen providers. Cancel expired pending synthesis without replaying a stale phrase; preserve the valid tail of speech that started on time.
 - Move long-buffer pitch-preserving WSOLA to a cancellable local worker, with a cooperative fallback. Await asynchronous provider deliveries, protect cached audio from transfer/detachment, and invalidate late results on pause, seek, settings changes and Stop.
 - Preserve accepted complete-mode captions and translations in source order beyond their original cue expiry. Bound the outstanding backlog at 256 phrases and report overload explicitly. Keep realtime's freshness policy.

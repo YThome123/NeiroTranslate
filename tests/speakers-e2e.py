@@ -40,7 +40,8 @@ WORKLET = """async () => {
   osc.frequency.value = 118;
   const level = capCtx.createGain(); level.gain.value = 0.25; osc.connect(level);
   const silent = capCtx.createGain(); silent.gain.value = 0; silent.connect(capCtx.destination);
-  const loaded = await startSpeakerAnalysis(level, silent);
+  const loaded = await startSpeakerAnalysis(level, silent, ++captureEpoch);
+  if (!loaded) throw new Error('Speaker AudioWorklet could not start');
   await capCtx.resume();
   osc.start();
   const t0 = Date.now(); await waitForFrames(t0, 118);

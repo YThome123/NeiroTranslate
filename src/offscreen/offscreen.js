@@ -15,6 +15,7 @@ let player = null;
 
 // Capture graph (16 kHz) for Gemini
 let stream = null;
+let captureEpoch = 0;
 let capCtx = null;
 let worklet = null;
 let monitorSrc = null;
@@ -105,21 +106,30 @@ function updateDuck() {
 // ─── Tab capture ────────────────────────────────────────────
 // Captures the tab, keeps it audible through monitorGain, and feeds a 16 kHz
 // analysis context. Returns the capture source/sink for extra consumers.
-async function startCapture(streamId) {
+function requireCapture(epoch) {
+  if (epoch !== captureEpoch) throw new Error('Tab capture cancelled');
+}
+
+async function startCapture(streamId, epoch) {
   ensurePlayback();
+  let captured;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
+    captured = await navigator.mediaDevices.getUserMedia({
       audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
       video: false
     });
   } catch (e) {
     throw new Error('Tab capture: ' + e.message);
   }
+  if (epoch !== captureEpoch) captured.getTracks().forEach(track => track.stop());
+  requireCapture(epoch);
+  stream = captured;
 
   // Keep the original audio audible (tab capture mutes the tab by default).
   monitorSrc = playCtx.createMediaStreamSource(stream);
   monitorSrc.connect(monitorGain);
   if (playCtx.state === 'suspended') await playCtx.resume();
+  requireCapture(epoch);
 
   let capSrc;
   try {
@@ -137,17 +147,20 @@ async function startCapture(streamId) {
 }
 
 // Pitch analysis is an optional extra: failure leaves speaker markup working.
-async function startSpeakerAnalysis(capSrc, silent) {
+async function startSpeakerAnalysis(capSrc, silent, epoch) {
   try {
     // Same worklet scope: speakers.js must be evaluated before the processor.
     await capCtx.audioWorklet.addModule('../shared/speakers.js');
+    requireCapture(epoch);
     await capCtx.audioWorklet.addModule('speaker-worklet.js');
+    requireCapture(epoch);
     analyser = new AudioWorkletNode(capCtx, 'nt-speaker-analyser');
     analyser.port.onmessage = (e) => recordSpeakerFrames(e.data);
     capSrc.connect(analyser);
     analyser.connect(silent);
     return true;
   } catch (e) {
+    if (epoch !== captureEpoch) return false;
     console.warn('[NeiroTranslate] speaker analysis unavailable', e);
     analyser = null;
     return false;
@@ -175,38 +188,46 @@ function speakerAt(from, to, previous) {
   return speakerClusters.assign(summary.log2, summary.voiced, previous);
 }
 
-async function startGemini(streamId) {
-  const { capSrc, silent } = await startCapture(streamId);
+async function startGemini(streamId, epoch) {
+  const { capSrc, silent } = await startCapture(streamId, epoch);
+  requireCapture(epoch);
   try {
     await capCtx.audioWorklet.addModule('pcm-worklet.js');
+    requireCapture(epoch);
     worklet = new AudioWorkletNode(capCtx, 'nt-pcm-chunker', { processorOptions: { targetRate: 16000, chunkMs: 100 } });
     worklet.port.onmessage = (e) => { if (gemini && !mediaPaused) gemini.sendAudio(toBase64(e.data)); };
     capSrc.connect(worklet);
     worklet.connect(silent);
     if (capCtx.state === 'suspended') await capCtx.resume();
+    requireCapture(epoch);
   } catch (e) {
     throw new Error('Audio pipeline: ' + e.message);
   }
-  await startSpeakerAnalysis(capSrc, silent);
+  await startSpeakerAnalysis(capSrc, silent, epoch);
+  requireCapture(epoch);
   connectGemini();
 }
 
 // Free mode: capture only to tell speakers apart. Any failure releases the
 // capture so the tab is never left muted.
-async function startCaptionsCapture(streamId) {
+async function startCaptionsCapture(streamId, epoch) {
   try {
-    const { capSrc, silent } = await startCapture(streamId);
+    const { capSrc, silent } = await startCapture(streamId, epoch);
+    requireCapture(epoch);
     if (capCtx.state === 'suspended') await capCtx.resume();
-    if (!(await startSpeakerAnalysis(capSrc, silent))) throw new Error('speakerAnalysisUnavailable');
+    requireCapture(epoch);
+    if (!(await startSpeakerAnalysis(capSrc, silent, epoch))) throw new Error('speakerAnalysisUnavailable');
+    requireCapture(epoch);
     updateDuck();
     return { capture: true };
   } catch (e) {
-    releaseCapture();
+    if (epoch === captureEpoch) releaseCapture();
     return { capture: false, captureError: e.message };
   }
 }
 
 function releaseCapture() {
+  captureEpoch++;
   if (analyser) { try { analyser.port.onmessage = null; analyser.disconnect(); } catch (e) { /* ignore */ } analyser = null; }
   if (worklet) { try { worklet.port.onmessage = null; worklet.disconnect(); } catch (e) { /* ignore */ } worklet = null; }
   if (monitorSrc) { try { monitorSrc.disconnect(); } catch (e) { /* ignore */ } monitorSrc = null; }
@@ -425,15 +446,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'NT_PING':
       sendResponse({ ok: true });
       return false;
-    case 'NT_OFF_START':
+    case 'NT_OFF_START': {
       sessionId = msg.sessionId;
       mediaVersion = msg.mediaVersion ?? 0; mediaPaused = false;
       source = 'gemini';
       applySettings(msg.settings);
-      startGemini(msg.streamId).then(() => sendResponse({ ok: true })).catch(e => {
-        stopAll(); sendResponse({ ok: false, error: e.message });
+      const epoch = ++captureEpoch;
+      startGemini(msg.streamId, epoch).then(() => sendResponse({ ok: true })).catch(e => {
+        if (epoch === captureEpoch) stopAll();
+        sendResponse({ ok: false, error: e.message });
       });
       return true;
+    }
     case 'NT_OFF_PREPARE':
       sessionId = msg.sessionId;
       mediaVersion = msg.mediaVersion ?? 0;
@@ -441,7 +465,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       applySettings(msg.settings);
       ensurePlayback();
       if (msg.streamId && !stream) {
-        startCaptionsCapture(msg.streamId).then(result => sendResponse(Object.assign({ ok: true }, result)));
+        startCaptionsCapture(msg.streamId, ++captureEpoch).then(result => sendResponse(Object.assign({ ok: true }, result)));
         return true;
       }
       sendResponse({ ok: true, capture: !!(stream && analyser) });

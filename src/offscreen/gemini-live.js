@@ -161,7 +161,10 @@ class NtGeminiLive {
           this.healthyAudioSince = now;
         }
         this.lastAudioSentAt = now;
-        if (now - this.healthyAudioSince >= 10000) this.transportFailures = 0;
+        if (now - this.healthyAudioSince >= 10000) {
+          this.retries = 0;
+          this.transportFailures = 0;
+        }
       }
       return true;
     } catch (error) {
@@ -184,7 +187,6 @@ class NtGeminiLive {
     if (data.setupComplete) {
       this.ready = true;
       clearTimeout(this.connectTimer);
-      this.retries = 0;
       this.onStatus('ready');
       const queued = this.pending;
       this.pending = [];

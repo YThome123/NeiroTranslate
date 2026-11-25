@@ -16,7 +16,7 @@ function harness(restored = Promise.resolve({}), globals = {}) {
     ntFindLanguage: () => ({ gt: 'ru', tts: 'ru-RU' }),
     ntTranslate: () => new Promise(r => { resolveTranslation = r; }),
     chrome: {
-      storage: { session: { get: () => typeof restored === 'function' ? restored(ctx) : restored, set: async () => {} }, local: { get() {}, set() {} }, onChanged: event('onChanged') },
+      storage: { session: { get: () => typeof restored === 'function' ? restored(ctx) : restored, set: async () => {} }, local: { get() {}, set() {}, setAccessLevel: async () => {} }, onChanged: event('onChanged') },
       runtime: { onMessage: event('onMessage'), onInstalled: listener, getURL: p => p, getContexts: async () => [], sendMessage: async m => { events.push(m); } },
       tabs: { get: async () => ({url:'https://video.test'}), sendMessage: async () => ({ ok: true }), onRemoved: event('onRemoved'), onUpdated: event('onUpdated') },
       action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
@@ -34,6 +34,55 @@ const harnessContexts=[];
 test.after(()=>{for(const ctx of harnessContexts)vm.runInContext('voiceQueue.clear();cancelBrowserSpeech()',ctx);});
 const tick = () => new Promise(r => setImmediate(r));
 const request = (h, message) => new Promise(resolve => h.listeners.onMessage[0](message, {}, resolve));
+
+test('only player settings reach the content script at start, update and reinjection', async () => {
+  const h = harness(); await tick();
+  const tabMessages = [], accessLevels = [];
+  h.ctx.chrome.storage.local.setAccessLevel = async options => { accessLevels.push(options.accessLevel); };
+  Object.assign(h.settings, {
+    geminiApiKey: 'gemini-fixture', elevenApiKey: 'eleven-fixture', yandexApiKey: 'yandex-fixture',
+    subtitleSize: 28, showOriginal: true, sourceLang: 'en', originalVolume: 0.25
+  });
+  h.ctx.chrome.tabs.sendMessage = async (id, message) => { tabMessages.push(message); return {ok:true}; };
+  assert.equal((await request(h, {type:'NT_START', tabId:1})).ok, true);
+  h.settings.subtitleSize = 34;
+  await h.listeners.onChanged[0]({subtitleSize:{newValue:34}}, 'local');
+  await h.listeners.onUpdated[0](1, {status:'complete'});
+  const settingsMessages = tabMessages.filter(msg => msg.settings);
+  assert.deepEqual(settingsMessages.map(msg => msg.type), ['NT_C_START', 'NT_C_SETTINGS', 'NT_C_START']);
+  assert.deepEqual(settingsMessages.map(msg => msg.settings.subtitleSize), [28, 34, 34]);
+  for (const {settings} of settingsMessages) {
+    assert.equal(settings.sourceLang, 'en');
+    assert.equal(settings.originalVolume, 0.25);
+    assert.equal(settings.showOriginal, true);
+    assert.equal(Object.keys(settings).some(key => /ApiKey|Model|dubVolume/.test(key)), false);
+  }
+  assert.ok(accessLevels.length > 0);
+  assert.ok(accessLevels.every(level => level === 'TRUSTED_CONTEXTS'));
+});
+
+test('a late Gemini start cannot mark a stopped session as capturing', async () => {
+  const h = harness(); await tick();
+  Object.assign(h.settings, {source:'gemini', voice:'gemini', geminiApiKey:'gemini-fixture'});
+  h.ctx.chrome.tabCapture = {getMediaStreamId: async () => 'stream'};
+  h.ctx.chrome.runtime.getContexts = async () => [{}];
+  h.ctx.chrome.offscreen = {closeDocument: async () => {}};
+  let releaseCapture, captureRequested;
+  const pendingCapture = new Promise(resolve => { releaseCapture = resolve; });
+  const awaitingCapture = new Promise(resolve => { captureRequested = resolve; });
+  h.ctx.chrome.runtime.sendMessage = async message => {
+    if (message.type !== 'NT_OFF_START') return {ok:true};
+    captureRequested();
+    return pendingCapture;
+  };
+  const starting = request(h, {type:'NT_START', tabId:1});
+  await awaitingCapture;
+  await request(h, {type:'NT_STOP'});
+  releaseCapture({ok:true});
+  await starting; await tick();
+  assert.equal(vm.runInContext('state.active', h.ctx), false);
+  assert.equal(vm.runInContext('state.capture', h.ctx), false);
+});
 
 for (const [key, value] of [['elevenModel', 'eleven_v4_turbo'], ['elevenVoiceId2', 'new-guest']]) {
   test(`changing ${key} during ElevenLabs playback releases the active queue immediately`, async () => {

@@ -476,11 +476,6 @@
     if (cfg.source === 'captions') setHideNative(cfg.hideNativeCaptions && cfg.showSubtitles !== false);
   }
 
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !active) return;
-    applySettings(Object.fromEntries(Object.entries(changes).map(([key,change]) => [key,change.newValue])));
-  });
-
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || !msg.type) return false;
     switch (msg.type) {

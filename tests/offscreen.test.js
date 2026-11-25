@@ -208,6 +208,32 @@ test('a failed free-mode capture releases the tab instead of leaving it muted',a
   assert.equal(vm.runInContext('stream===null && monitorSrc===null && capCtx===null',ctx),true);
 });
 
+test('Stop releases a tab capture delivered after a replacement session starts', async () => {
+  let receive, deliver, stopped = 0, monitorConnections = 0;
+  const pending = new Promise(resolve => { deliver = resolve; });
+  const ctx = vm.createContext({...shared, clearTimeout, console:{warn(){}},
+    chrome:{runtime:{onMessage:{addListener:fn=>{receive=fn;}},sendMessage:async()=>{}}},
+    navigator:{mediaDevices:{getUserMedia:()=>pending}},
+    AudioContext:class {
+      state = 'running';
+      createGain() { return {gain:{value:1,setTargetAtTime(){}},connect(){}}; }
+      createMediaStreamSource() { monitorConnections++; throw new Error('unexpected capture graph'); }
+      close() { return Promise.resolve(); }
+    },
+    NtAudioPlayer:class { clear(){} destroy(){} }});
+  vm.runInContext(fs.readFileSync('src/offscreen/offscreen.js','utf8'), ctx);
+  const request = message => new Promise(resolve => receive({target:'offscreen', ...message}, {}, resolve));
+  const settings = {voice:'browser',dubVolume:1,originalVolume:.25};
+  const starting = request({type:'NT_OFF_PREPARE',sessionId:'A',settings,streamId:'s1'});
+  await request({type:'NT_OFF_STOP',sessionId:'A'});
+  await request({type:'NT_OFF_PREPARE',sessionId:'B',settings});
+  deliver({getTracks:()=>[{stop(){stopped++;}}]});
+  assert.equal((await starting).capture, false);
+  assert.equal(monitorConnections, 0);
+  assert.equal(stopped, 1);
+  assert.equal(vm.runInContext("sessionId==='B' && stream===null && playCtx!==null", ctx), true);
+});
+
 test('Google voice is sped up from its exact decoded length to fit the sync window',async()=>{
   const shapes=[];
   const ctx=vm.createContext({...shared,Date,Math,setTimeout,clearTimeout,AbortController,console:{warn(){}},
