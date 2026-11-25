@@ -17,7 +17,7 @@ function harness(settingsPatch = {}, globals = {}) {
     ntFindLanguage: () => ({gt: 'ru', tts: 'ru-RU'}),
     ntTranslate: async text => ({ok: true, text: 'RU ' + text, detected: 'en'}),
     chrome: {
-      storage: {session: {get: async () => ({}), set: async () => {}}, local: {get() {}, set() {}}, onChanged: event('onChanged')},
+      storage: {session: {get: async () => ({}), set: async () => {}}, local: {get() {}, set() {}, setAccessLevel: async () => {}}, onChanged: event('onChanged')},
       runtime: {onMessage: event('onMessage'), onInstalled: listener, getURL: p => p, getContexts: async () => [],
         sendMessage: async m => { events.push(m); return {ok: true}; }},
       tabs: {get: async () => ({url: 'https://video.test'}), sendMessage: async (id, m) => { tabMessages.push(m); return {ok: true}; },
@@ -39,6 +39,25 @@ test.after(() => { for (const ctx of contexts) vm.runInContext('voiceQueue.clear
 const tick = () => new Promise(r => setImmediate(r));
 const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
 const active = "state={...IDLE_STATE,active:true,tabId:1,source:'captions',voice:'browser',targetLang:'ru',sessionId:'A'};";
+
+test('a late speaker result cannot queue an older real-time caption', async () => {
+  const clock = fakeClock(5000);
+  const h = harness({}, clock.globals); await tick();
+  const speakers = [];
+  h.ctx.chrome.runtime.getContexts = async () => [{}];
+  h.ctx.chrome.runtime.sendMessage = message => message.type === 'NT_OFF_SPEAKER'
+    ? new Promise(resolve => speakers.push(resolve)) : Promise.resolve({ok:true});
+  h.ctx.timing = {deadline:clock.now()+5000, spokenFrom:clock.now()-1200, spokenTo:clock.now()};
+  vm.runInContext(active + "state.capture=true;handleCaption('Old caption','en',timing)", h.ctx);
+  await settle();
+  vm.runInContext("handleCaption('New caption','en',timing)", h.ctx);
+  await settle();
+  assert.equal(speakers.length, 2);
+  speakers[1]({ok:true,speaker:null}); await settle();
+  speakers[0]({ok:true,speaker:null}); await settle();
+  h.spoken[0].options.onEvent({type:'end'}); await settle();
+  assert.deepEqual(h.spoken.map(item => item.text), ['RU New caption']);
+});
 
 test('complete mode retains seven captions behind a stalled translation and speaks after subtitle expiry',async()=>{
   const h=harness({syncMode:'complete'});await tick();let now=Date.now();h.ctx.Date={now:()=>now};

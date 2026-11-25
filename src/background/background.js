@@ -4,6 +4,8 @@ importScripts('../shared/languages.js', '../shared/settings.js', '../shared/i18n
 
 const OFFSCREEN_PATH = 'src/offscreen/offscreen.html';
 const CONTENT_FILES = ['src/content/segmenter.js', 'src/shared/speech-timing.js', 'src/shared/speakers.js', 'src/content/content.js'];
+const CONTENT_SETTINGS = ['source', 'voice', 'targetLang', 'sourceLang', 'uiLang', 'originalVolume',
+  'showSubtitles', 'showOriginal', 'subtitleSize', 'subtitlePosition', 'hideNativeCaptions'];
 const OFFSCREEN_VOICES = ['google', 'elevenlabs', 'yandex'];
 const TTS_DONE = ['end', 'interrupted', 'cancelled', 'error'];
 // Gemini's transcript of a phrase arrives roughly this long after it was said.
@@ -150,7 +152,13 @@ async function sendToOffscreen(msg, tries = 30) {
 }
 
 // ─── Content script ─────────────────────────────────────────
+function contentSettings(settings) {
+  return Object.fromEntries(CONTENT_SETTINGS.map(key => [key, settings[key]]));
+}
+
 async function ensureContent(tabId) {
+  // Provider keys and history are used only by trusted extension contexts.
+  await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
   try {
     const res = await chrome.tabs.sendMessage(tabId, { type: 'NT_PING' }, { frameId: 0 });
     if (res && res.ok) return;
@@ -211,7 +219,11 @@ async function start(tabId, signal = lifecycleAbort.signal) {
     else if (wantsCapture) {
       // Needed only for optional speaker detection: never fail the session over it.
       try { await ensureOffscreen(); }
-      catch (error) { wantsCapture = false; state.captureError = error?.message || String(error); }
+      catch (error) {
+        if (!current()) return CANCELLED;
+        wantsCapture = false;
+        state.captureError = error?.message || String(error);
+      }
     }
     const needsOffscreen = requiresOffscreen || wantsCapture;
     if (!current()) return CANCELLED;
@@ -220,6 +232,7 @@ async function start(tabId, signal = lifecycleAbort.signal) {
       const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
       if (!current()) return CANCELLED;
       await sendToOffscreen({ type: 'NT_OFF_START', streamId, settings, sessionId: id });
+      if (!current()) return CANCELLED;
       state.capture = true;
     } else if (needsOffscreen) {
       // Speaker detection is optional: a refused capture leaves free mode working
@@ -227,12 +240,16 @@ async function start(tabId, signal = lifecycleAbort.signal) {
       let streamId = null;
       if (wantsCapture) {
         try { streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }); }
-        catch (error) { state.captureError = error?.message || String(error); }
+        catch (error) {
+          if (!current()) return CANCELLED;
+          state.captureError = error?.message || String(error);
+        }
         if (!current()) return CANCELLED;
       }
       let prepared = null;
       try { prepared = await sendToOffscreen({ type: 'NT_OFF_PREPARE', settings, sessionId: id, streamId }); }
       catch (error) {
+        if (!current()) return CANCELLED;
         if (requiresOffscreen) throw error;
         state.captureError = error?.message || String(error);
       }
@@ -243,7 +260,7 @@ async function start(tabId, signal = lifecycleAbort.signal) {
     saveState();
     if (!current()) return CANCELLED;
 
-    await chrome.tabs.sendMessage(tabId, { type: 'NT_C_START', settings, sessionId: id }, { frameId: 0 });
+    await chrome.tabs.sendMessage(tabId, { type: 'NT_C_START', settings: contentSettings(settings), sessionId: id }, { frameId: 0 });
     if (!current()) return CANCELLED;
 
     if (settings.source === 'gemini') { if (state.status === 'starting') setStatus('connecting'); }
@@ -368,7 +385,7 @@ async function speak(text, deadline = Date.now() + 2500, expectedTarget = state.
   let s;
   try {s=await ntGetSettings();}
   catch(error) {if(epoch===sessionEpoch && state.active)setStatus('voice_error',error.message);return;}
-  if(revision!==settingsRevision)return;
+  if(revision!==settingsRevision || extra.isCurrent?.() === false)return;
   if (!state.active || state.paused || epoch !== sessionEpoch || (s.syncMode !== 'complete' && Date.now() > deadline) ||
       (state.source && s.source!==state.source)) return;
   // A failed storage notification must not leave the actual session permanently
@@ -385,7 +402,7 @@ async function speak(text, deadline = Date.now() + 2500, expectedTarget = state.
     } catch(error) {if(epoch===sessionEpoch)setStatus('voice_error',error.message);}
     if(!state.active || state.paused || epoch!==sessionEpoch)return;
   }
-  if(revision!==settingsRevision || (expectedTarget && s.targetLang!==expectedTarget))return;
+  if(revision!==settingsRevision || (expectedTarget && s.targetLang!==expectedTarget) || extra.isCurrent?.() === false)return;
   if(!['browser',...OFFSCREEN_VOICES].includes(s.voice))return;
   const now = Date.now();
   const realtime = s.syncMode !== 'complete';
@@ -849,11 +866,12 @@ function handleCaption(text, sourceLang, timing = {}) {
     // Asked after translation on purpose: by then more of the phrase has been
     // heard, which matters for cues that are read before they are spoken.
     const acoustic = await querySpeaker(timing.spokenFrom, timing.spokenTo, s);
-    if (abort.signal.aborted || epoch !== sessionEpoch || !state.active || state.paused) return;
+    const isCurrent = () => !abort.signal.aborted && (complete || (sequence >= displayedSequence && Date.now() <= requestDeadline));
+    if (!isCurrent() || epoch !== sessionEpoch || !state.active || state.paused) return;
     const voiced = parts.map((part, i) => ({text: ntSpeakableText(r.texts ? r.texts[i] : r.text),
       detected:r.detectedParts?.[i],speaker: s.multiVoice !== false ? speakerBook.resolve(part, acoustic, i) : null}))
       .filter(part => part.text && (!part.detected || part.detected.split('-')[0] !== lang.gt.split('-')[0]));
-    if (voiced.length) await speak(voiced.map(part => part.text).join(' '), deadline, s.targetLang, {parts: voiced, syncEnd: timing.syncEnd});
+    if (voiced.length) await speak(voiced.map(part => part.text).join(' '), deadline, s.targetLang, {parts: voiced, syncEnd: timing.syncEnd, isCurrent});
   }).catch((e) => { if (!abort.signal.aborted && epoch === sessionEpoch) setStatus('translation_error', e.message); })
     .finally(() => {
       translations.delete(abort);completeTranslations.delete(abort);
@@ -1087,7 +1105,7 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     if (changes.targetLang) state.targetLang = s.targetLang;
     saveState();
     if (await hasOffscreen() && current()) await sendToOffscreen({ type: 'NT_OFF_SETTINGS', settings: s }, 3);
-    if (current()) await sendToTab({type:'NT_C_SETTINGS',settings:s,sessionId:id});
+    if (current()) await sendToTab({type:'NT_C_SETTINGS',settings:contentSettings(s),sessionId:id});
     if (current() && resetVoice) await sendToTab({type:'NT_C_REFRESH'});
   }).catch(e => { if (current()) setStatus('voice_error', e.message); });
 });
@@ -1115,7 +1133,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, info) => {
     if (!current()) return;
     const settings = await ntGetSettings();
     if (!current()) return;
-    await chrome.tabs.sendMessage(tabId, { type: 'NT_C_START', settings, resume: true, sessionId: id, mediaVersion: state.mediaVersion }, { frameId: 0 });
+    await chrome.tabs.sendMessage(tabId, { type: 'NT_C_START', settings: contentSettings(settings), resume: true, sessionId: id, mediaVersion: state.mediaVersion }, { frameId: 0 });
   }).catch(async error => {
     if (!current()) return;
     const controller = lifecycleAbort;

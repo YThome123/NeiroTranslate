@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a translation, audio or interface problem
+body:
+  - type: input
+    id: version
+    attributes:
+      label: NeiroTranslate version
+      description: Shown at the bottom of the Settings page.
+      placeholder: 3.4.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and OS
+      placeholder: Chrome 140 / Windows 11
+    validations:
+      required: true
+  - type: input
+    id: mode
+    attributes:
+      label: Translation mode and voice
+      placeholder: From captions / Browser voice / Russian
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps, expected result and actual result
+      description: Include the site or a public video link, whether it is a livestream, whether CC is available, and the error text. For timing bugs, describe what happens on pause/seek. Remove API keys and personal information.
+    validations:
+      required: true

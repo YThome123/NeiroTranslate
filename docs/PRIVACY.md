@@ -4,7 +4,7 @@ NeiroTranslate не использует собственный сервер, а
 
 | Данные | Куда передаются / где хранятся |
 | --- | --- |
-| API-ключи и настройки | `chrome.storage.local` в профиле браузера; не синхронизируются расширением и не входят в экспорт статистики |
+| API-ключи и настройки | `chrome.storage.local` в профиле браузера; ключи доступны служебным страницам и фоновому процессу расширения. Скрипт вкладки получает только настройки воспроизведения и субтитров. Ключи не синхронизируются и не входят в экспорт статистики |
 | Субтитры в режиме «Из субтитров» | Текст отправляется в Google Translate; при сбое и известном языке — MyMemory |
 | Звук в режиме Gemini | Звук выбранной вкладки отправляется напрямую в Gemini Live; микрофон не запрашивается |
 | Звук в режиме «Из субтитров» | Только при включённом «Определять говорящих по звуку»: звук вкладки анализируется **локально** (высота голоса, громкость) и никуда не отправляется. В памяти хранятся только числа высоты/громкости за последние 30 секунд; сам звук не сохраняется |
@@ -15,7 +15,7 @@ NeiroTranslate не использует собственный сервер, а
 
 При включённой «Связной интонации соседних фраз» HTTP-модели ElevenLabs могут получать до 100 символов предыдущей завершённой реплики того же голоса как контекст. Он хранится только в памяти до восьми секунд и сбрасывается при паузе/перемотке/остановке и смене конфигурации. v4 Turbo использует WebSocket без этого контекста; ключ передаётся в первом JSON-сообщении, а не в URL. Текст ручного прослушивания отправляется в ElevenLabs только при нажатии «Проверить» и не сохраняется в настройках или истории.
 
-Для непрерывной речи в памяти могут ждать до двух свежих реплик; очередь не сохраняется в историю и очищается при остановке/паузе/перемотке. Повторный запрос после временного сетевого сбоя допускается один раз и только при подтверждении, что соответствующий текст ещё присутствует в текущих субтитрах.
+В режиме реального времени озвучка обрабатывает текущую реплику и одну ожидающую. В полном режиме до 256 реплик могут ожидать перевода или озвучивания, включая текущую. Очередь хранится в памяти и очищается при остановке, паузе или перемотке. Повторный запрос после временного сетевого сбоя допускается один раз и только при подтверждении, что соответствующий текст ещё присутствует в текущих субтитрах.
 
 Если готовая дорожка содержит следующую реплику, расширение может отправить её на бесплатный перевод не более чем за четыре секунды до показа. При выбранном Google-голосе также заранее готовится её звук. Подготовка не включает озвучку до наступления cue; платные голоса заранее не генерируются. Декодированный Google-звук хранится только в памяти аудиодокумента: до 24 частей, не более 12 МиБ, до двух минут. Пауза/перемотка отменяют подготовку, остановка закрывает аудиодокумент.
 
@@ -25,7 +25,7 @@ NeiroTranslate не использует собственный сервер, а
 
 ---
 
-NeiroTranslate has no project backend or analytics. It stores settings, keys and session metadata in the local browser profile. Caption mode sends text to Google Translate (and, with a known source language, MyMemory as fallback). Gemini mode sends the selected tab's audio directly to Google; it does not request the microphone. Voice synthesis sends text to the selected provider. Browser online voices may also use a network service.
+NeiroTranslate has no project backend or analytics. It stores settings, keys and session metadata in the local browser profile. API keys stay in trusted extension contexts. The script in the video tab receives only playback and subtitle preferences. Caption mode sends text to Google Translate (and, with a known source language, MyMemory as fallback). Gemini mode sends the selected tab's audio directly to Google without accessing the microphone. Voice synthesis sends text to the selected provider. Browser online voices may also use a network service.
 
 In caption mode with "Detect speakers from the video audio" enabled, the tab's audio is analysed locally for voice pitch only; nothing is sent anywhere, and only pitch/loudness numbers of the last 30 seconds are kept in memory. The option can be turned off in Settings.
 

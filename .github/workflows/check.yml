@@ -1,0 +1,77 @@
+name: Check extension
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: node tools/check-secrets.mjs --history
+      - run: node tools/check.mjs
+      - run: node --test --test-timeout=10000 tests/*.test.js
+      - run: node --check tests/fixtures/audio-probe.js
+      - run: python -m compileall -q tests tools
+      - run: pip install -r requirements-dev.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python tools/make-demo-media.py
+      - run: python tests/e2e.py
+      - run: python tests/playback-e2e.py
+      - run: python tests/stream-voices-e2e.py
+      - run: python tests/speakers-e2e.py
+      - run: python tests/audio-shaping-e2e.py
+      - run: python tests/elevenlabs-e2e.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playback-test-results
+          path: test-results/
+      - run: python tools/package.py
+      - run: python tools/package.py --source
+      - id: version
+        run: echo "value=$(node -p 'require("./manifest.json").version')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neirotranslate-extension
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+  release:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, format('release: v{0}', needs.verify.outputs.version))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: neirotranslate-extension
+          path: dist
+      - name: Publish verified archives
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          tag="v$VERSION"
+          test "${COMMIT_MESSAGE%%$'\n'*}" = "release: $tag"
+          extension="neirotranslate-$VERSION.zip"
+          source="neirotranslate-$VERSION-source.zip"
+          sha256sum --strict -c "$extension.sha256" "$source.sha256"
+          unzip -p "$source" CHANGELOG.md | awk '/^## / { if (entry++) exit; next } entry { print }' > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$tag" "$extension" "$extension.sha256" "$source" "$source.sha256" \
+            --target "$GITHUB_SHA" --title "NeiroTranslate $tag" --notes-file "$RUNNER_TEMP/release-notes.md"

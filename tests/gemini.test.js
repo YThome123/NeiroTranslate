@@ -26,6 +26,18 @@ test('reconnect immediately stops sending audio to an unready socket', () => {
   assert.equal(g.ready, false); assert.equal(g.pending.length, 1);
 });
 
+test('brief successful handshakes do not renew the Gemini retry budget', async () => {
+  const {g, timers, fatals} = client();
+  g.connect();
+  for (let attempt = 0; attempt < 7; attempt++) {
+    const socket = g.ws;
+    await socket.onmessage({data:JSON.stringify({setupComplete:{}})});
+    socket.onclose({code:1006, reason:''});
+    if (attempt < 6) timers.at(-1).fn();
+  }
+  assert.equal(fatals.length, 1);
+});
+
 test('a decoded message from an old socket cannot complete a new handshake', async () => {
   let decode;
   class DelayedResponse { text() { return new Promise(r => {decode = r;}); } }
